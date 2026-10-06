@@ -4,7 +4,7 @@ import { GitPullRequest, GitPullRequestDraft, CornerDownRight } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Keys } from "@/components/ui/key-hint";
-import { api } from "./api";
+import { api, scope } from "./api";
 import type { MyPullRequest } from "../server/github";
 import { orderStacks } from "../shared/stacks";
 import { useListKeys } from "./useListKeys";
@@ -30,7 +30,7 @@ export function MyPulls({ visible, busy, currentUrl, onOpen, onLoaded }: {
     setLoading(true);
     setError("");
     try {
-      const next = await api.myPulls.query();
+      const next = await api.myPulls.query(scope());
       setPulls(next);
       onLoaded(next);
     } catch (error) {

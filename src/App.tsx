@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Keys } from "@/components/ui/key-hint";
 import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
-import { api } from "./api";
+import { api, scope, setCheckout } from "./api";
 import type { Review } from "../shared/types";
 import { Workspace } from "./Workspace";
 import { MyPulls } from "./MyPulls";
@@ -57,8 +57,10 @@ export function App() {
   const [stackPulls, setStackPulls] = useState<MyPullRequest[]>([]);
   const [view, setView] = useState<View>(() => {
     const params = new URLSearchParams(location.search);
-    return params.has("review") && !params.has("branch") ? "review" : "pulls";
+    return params.has("review") && !params.has("checkout") ? "review" : "pulls";
   });
+  // Bumped to remount the branch view on a branch (a checkout without a PR).
+  const [branchFocus, setBranchFocus] = useState<{ branch: string; n: number }>();
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [path, setPath] = useState("");
@@ -77,21 +79,24 @@ export function App() {
   }
   useEffect(() => {
     const params = new URLSearchParams(location.search);
-    // `?branch=` comes from hyprnav: a T3 thread's slot points this tab at
-    // its worktree branch. It wins over `?review=` and is dropped once read,
-    // so the next jump with the same branch still navigates.
-    const branch = params.get("branch");
-    const pulls = api.myPulls.query();
-    pulls.then(setStackPulls).catch(report);
-    if (branch) {
-      history.replaceState(null, "", params.has("review") ? `?review=${params.get("review")}` : location.pathname);
-      pulls.then((list) => {
-        const pull = list.find((candidate) => candidate.headRefName === branch);
-        if (pull) void open(pull.url);
+    // `?checkout=` comes from hyprnav: a T3 thread's slot points this tab at
+    // the directory the thread works in. The tab then reviews that checkout's
+    // repository: its open PR for the current branch, or else the branch's
+    // commits. The parameter is dropped once read, so the next jump to the
+    // same checkout still navigates; the tab keeps it for the session.
+    const checkout = params.get("checkout");
+    if (checkout) {
+      setCheckout(checkout);
+      history.replaceState(null, "", location.pathname);
+      api.myPulls.query(scope()).then(setStackPulls).catch(report);
+      api.checkout.query({ path: checkout }).then((target) => {
+        if (target.pull) void open(target.pull.url);
+        else if (target.branch) { setBranchFocus((old) => ({ branch: target.branch!, n: (old?.n ?? 0) + 1 })); setView("branches"); }
         else setView("pulls");
-      }).catch(report);
+      }).catch((error) => { setView("pulls"); report(error); });
       return;
     }
+    api.myPulls.query(scope()).then(setStackPulls).catch(report);
     const id = params.get("review");
     if (id && /^[a-f0-9]{24}$/.test(id)) void switchReview(id);
   }, []);
@@ -136,7 +141,7 @@ export function App() {
     const request = ++sequence.current;
     setBusy(true);
     try {
-      const next = commit ? await api.openCommit.mutate({ branch, commit }) : await api.openBranch.mutate({ branch });
+      const next = commit ? await api.openCommit.mutate({ ...scope(), branch, commit }) : await api.openBranch.mutate({ ...scope(), branch });
       if (request !== sequence.current) return;
       setReview(next); setView("review");
     } catch (error) { if (request === sequence.current) report(error); }
@@ -147,7 +152,7 @@ export function App() {
     setBusy(true);
     toast.dismiss("app-error");
     try {
-      const next = await api.open.mutate({ url: target });
+      const next = await api.open.mutate({ ...scope(), url: target });
       if (request !== sequence.current) return;
       if (review?.source.url === next.source.url)
         toast.success(t(review.id === next.id ? "upToDate" : "newRevision"));
@@ -312,8 +317,9 @@ export function App() {
         onOpen={(url) => void open(url)}
       />
       <BranchView
+        key={branchFocus?.n ?? 0}
         visible={view === "branches"}
-        initialBranch={review?.source.kind === "local" ? review.source.branch : undefined}
+        initialBranch={branchFocus?.branch ?? (review?.source.kind === "local" ? review.source.branch : undefined)}
         currentCommit={review?.source.kind === "local" && review.source.branchReview && !review.source.branchComparison ? review.revision : undefined}
         busy={busy || saving}
         onOpen={(branch, commit) => void openCommit(branch, commit)}

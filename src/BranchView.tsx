@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import { toast } from "sonner";
 import { GitBranch } from "lucide-react";
-import { api } from "./api";
+import { api, scope } from "./api";
 import { Button } from "./components/ui/button";
 import { Keys } from "./components/ui/key-hint";
 import { useListKeys } from "./useListKeys";
@@ -28,14 +28,14 @@ export function BranchView({ visible, initialBranch, currentCommit, busy, onOpen
   useEffect(() => {
     if (!visible || branches.length) return;
     let alive = true;
-    api.branches.query().then((rows) => { if (alive) { setBranches(rows); setBranch((old) => rows.includes(old) ? old : rows[0] ?? ""); } }).catch((error) => toast.error(error.message));
+    api.branches.query(scope()).then((rows) => { if (alive) { setBranches(rows); setBranch((old) => rows.includes(old) ? old : rows[0] ?? ""); } }).catch((error) => toast.error(error.message));
     return () => { alive = false; };
   }, [visible]);
   useEffect(() => {
     if (!branch) return;
     let alive = true;
     setAuthors([]);
-    api.branchAuthors.query({ branch }).then((rows) => { if (alive) setAuthors(rows); })
+    api.branchAuthors.query({ ...scope(), branch }).then((rows) => { if (alive) setAuthors(rows); })
       .catch((error) => { if (alive) toast.error(error.message); });
     return () => { alive = false; };
   }, [branch]);
@@ -44,7 +44,7 @@ export function BranchView({ visible, initialBranch, currentCommit, busy, onOpen
     let alive = true;
     setLoading(true);
     const timer = window.setTimeout(() => {
-    api.branchCommits.query({ branch, skip: limit, author: author || undefined, search }).then((result) => {
+    api.branchCommits.query({ ...scope(), branch, skip: limit, author: author || undefined, search }).then((result) => {
       if (alive) { setCommits((previous) => limit ? [...previous, ...result.commits] : result.commits); setMore(result.more); }
     }).catch((error) => { if (alive) toast.error(error.message); }).finally(() => { if (alive) setLoading(false); });
     }, search ? 250 : 0);

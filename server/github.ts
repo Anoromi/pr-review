@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import type { Review } from "../shared/types";
 import { parseFiles } from "../shared/diff";
-import { githubRepo } from "./repository";
+import { githubRepo, localRepo } from "./repository";
 
 const execute = promisify(execFile);
 
@@ -19,12 +19,12 @@ export interface MyPullRequest {
 }
 
 let knownPulls: MyPullRequest[] = [];
-export async function localPullMetadata(url: string, run = gh) {
+export async function localPullMetadata(url: string, run = gh, repo = localRepo()) {
   const source = parsePullUrl(url);
-  const configured = githubRepo();
+  const configured = githubRepo(repo);
   if (source.owner !== configured.owner || source.repo !== configured.name)
     throw new Error(`Local review is configured for ${configured.slug}.`);
-  const pull = knownPulls.find((pull) => pull.number === source.number);
+  const pull = knownPulls.find((pull) => pull.number === source.number && pull.url.includes(`/${source.owner}/${source.repo}/`));
   if (pull) return pull;
   return JSON.parse(await run([
     "pr", "view", String(source.number), "--repo", `${source.owner}/${source.repo}`,
@@ -32,13 +32,13 @@ export async function localPullMetadata(url: string, run = gh) {
   ])) as MyPullRequest;
 }
 
-export async function listMyPulls(run = gh): Promise<MyPullRequest[]> {
+export async function listMyPulls(run = gh, repo = localRepo()): Promise<MyPullRequest[]> {
   const pulls: MyPullRequest[] = JSON.parse(
     await run([
       "pr",
       "list",
       "--repo",
-      githubRepo().slug,
+      githubRepo(repo).slug,
       "--author",
       "@me",
       "--state",
@@ -176,4 +176,13 @@ export async function loadPullRequest(
     viewed: [],
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** The open PR whose head is `branch` in `slug` (any author), or null. */
+export async function pullForBranch(slug: string, branch: string, run = gh): Promise<MyPullRequest | null> {
+  const pulls: MyPullRequest[] = JSON.parse(await run([
+    "pr", "list", "--repo", slug, "--head", branch, "--state", "open", "--limit", "1",
+    "--json", "number,title,url,headRefName,baseRefName,isCrossRepository,isDraft,updatedAt",
+  ]));
+  return pulls[0] ?? null;
 }

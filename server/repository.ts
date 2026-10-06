@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 /** The local checkout reviews are computed from. */
 export const localRepo = () => resolve(process.env.LOCAL_REPO ?? process.cwd());
@@ -10,10 +10,30 @@ export interface GitHubRepository {
   slug: string;
 }
 
-/** `owner/name` from a GitHub remote URL (SSH, scp-like or HTTPS), or null. */
-export function parseGitHubRemote(url: string): GitHubRepository | null {
-  const match = /^(?:https:\/\/|ssh:\/\/git@|git@)github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url.trim());
-  return match ? { owner: match[1], name: match[2], slug: `${match[1]}/${match[2]}` } : null;
+/**
+ * `owner/name` from a GitHub remote URL (HTTPS, SSH or scp-like), or null.
+ * `resolveHost` maps an SSH host alias (e.g. `github-personal` in
+ * ~/.ssh/config) to the real host name.
+ */
+export function parseGitHubRemote(url: string, resolveHost: (host: string) => string = (host) => host): GitHubRepository | null {
+  const match =
+    /^https:\/\/(?:[^@/]+@)?([^/:]+)\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url.trim()) ??
+    /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url.trim()) ??
+    /^(?:[^@/\s]+@)?([^/:\s]+):([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(url.trim());
+  if (!match) return null;
+  const [, host, owner, name] = match;
+  if (host !== "github.com" && resolveHost(host) !== "github.com") return null;
+  return { owner, name, slug: `${owner}/${name}` };
+}
+
+/** The host an SSH alias connects to, per `ssh -G`; the alias itself if unknown. */
+export function sshHostName(alias: string): string {
+  try {
+    const config = execFileSync("ssh", ["-G", alias], { encoding: "utf8", timeout: 5000 });
+    return /^hostname (\S+)$/m.exec(config)?.[1] ?? alias;
+  } catch {
+    return alias;
+  }
 }
 
 const cache = new Map<string, GitHubRepository>();
@@ -36,7 +56,7 @@ export function githubRepo(repo = localRepo()): GitHubRepository {
   try {
     remote = execFileSync("git", ["-C", repo, "config", "--get", "remote.origin.url"], { encoding: "utf8" });
   } catch {}
-  const parsed = parseGitHubRemote(remote);
+  const parsed = parseGitHubRemote(remote, sshHostName);
   if (!parsed) throw new Error(`Set GITHUB_REPO=owner/name: the origin remote of ${repo} is not a GitHub repository.`);
   cache.set(repo, parsed);
   return parsed;
@@ -46,6 +66,30 @@ export function githubRepo(repo = localRepo()): GitHubRepository {
 export function githubRepoOrNull(repo = localRepo()): GitHubRepository | null {
   try {
     return githubRepo(repo);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The repository a request works on: the top level of `checkout` (a path to
+ * any directory inside a Git checkout or worktree) when given, otherwise the
+ * default checkout.
+ */
+export function checkoutRepo(checkout?: string): string {
+  if (!checkout) return localRepo();
+  if (!isAbsolute(checkout)) throw new Error("The checkout must be an absolute path.");
+  try {
+    return execFileSync("git", ["-C", checkout, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  } catch {
+    throw new Error(`${checkout} is not inside a Git checkout.`);
+  }
+}
+
+/** The branch checked out in `repo`, or null when HEAD is detached. */
+export function currentBranch(repo: string): string | null {
+  try {
+    return execFileSync("git", ["-C", repo, "symbolic-ref", "--short", "-q", "HEAD"], { encoding: "utf8" }).trim() || null;
   } catch {
     return null;
   }

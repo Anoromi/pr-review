@@ -46,7 +46,7 @@ Set `REVIEW_DIR=/absolute/path` when starting the app to change the storage dire
 
 pr-review reviews one repository at a time:
 
-- `LOCAL_REPO`: the local checkout diffs are computed from. Defaults to the directory the server starts in.
+- `LOCAL_REPO`: the default checkout, used when a tab has no `?checkout=`. Defaults to the directory the server starts in.
 - `GITHUB_REPO`: the GitHub repository as `owner/name`. Defaults to the checkout's `origin` remote.
 
 Put them in `.env.local` (git-ignored; `pnpm dev` and `pnpm start` load it):
@@ -56,7 +56,9 @@ LOCAL_REPO=/path/to/your/checkout
 # GITHUB_REPO=owner/name
 ```
 
-Opening `?branch=<name>` (for example from a hyprnav browser slot) opens your open PR whose head is that branch, or the PR list when there is none.
+Opening `?checkout=<absolute path>` (for example from a hyprnav browser slot, which passes a T3 thread's worktree) reviews that checkout instead: its repository and current branch come from Git, so any project works without configuration. If the branch has an open PR, the PR opens; otherwise the branch's commits are listed. The tab keeps that checkout for the rest of its session.
+
+GitHub remotes are recognised in HTTPS, SSH and scp-like form, including SSH host aliases from `~/.ssh/config` (resolved with `ssh -G`).
 
 ## Local diffs and snapshots
 

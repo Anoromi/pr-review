@@ -8,13 +8,15 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ReviewStore } from "./store";
-import { localPullMetadata, listMyPulls } from "./github";
-import { githubRepo } from "./repository";
+import { localPullMetadata, listMyPulls, pullForBranch } from "./github";
+import { checkoutRepo, currentBranch, githubRepo, githubRepoOrNull } from "./repository";
 import { markdown } from "./markdown";
 import { parseFiles, selectedCode } from "../shared/diff";
 
 const t = initTRPC.create();
 const idInput = z.object({ id: z.string().regex(/^[a-f0-9]{24}$/) });
+// Which checkout a request works on (see checkoutRepo); omitted = the default.
+const scoped = z.object({ checkout: z.string().min(1).max(4096).optional() });
 const commentInput = idInput
   .extend({
     commentId: z.string().min(1).optional(),
@@ -45,19 +47,19 @@ export function createRouter(store: ReviewStore) {
     }
   });
   return t.router({
-    branches: procedure.query(() => listBranches()),
-    branchAuthors: procedure.input(z.object({ branch: z.string().min(1) })).query(({ input }) => listBranchAuthors(input.branch)),
-    branchCommits: procedure.input(z.object({ branch: z.string().min(1), author: z.string().min(1).max(1000).optional(), search: z.string().trim().max(1000).default(""), skip: z.number().int().nonnegative().default(0) })).query(({ input }) => listBranchCommits(input.branch, input.skip, undefined, input.author, input.search)),
-    openCommit: procedure.input(z.object({ branch: z.string().min(1), commit: z.string().regex(/^[a-f0-9]{40}$/) })).mutation(async ({ input }) => {
-      const fresh = await loadBranchCommit(input.branch, input.commit, store);
+    branches: procedure.input(scoped.optional()).query(({ input }) => listBranches(checkoutRepo(input?.checkout))),
+    branchAuthors: procedure.input(scoped.extend({ branch: z.string().min(1) })).query(({ input }) => listBranchAuthors(input.branch, checkoutRepo(input.checkout))),
+    branchCommits: procedure.input(scoped.extend({ branch: z.string().min(1), author: z.string().min(1).max(1000).optional(), search: z.string().trim().max(1000).default(""), skip: z.number().int().nonnegative().default(0) })).query(({ input }) => listBranchCommits(input.branch, input.skip, checkoutRepo(input.checkout), input.author, input.search)),
+    openCommit: procedure.input(scoped.extend({ branch: z.string().min(1), commit: z.string().regex(/^[a-f0-9]{40}$/) })).mutation(async ({ input }) => {
+      const fresh = await loadBranchCommit(input.branch, input.commit, store, checkoutRepo(input.checkout));
       return store.transaction(async () => {
         try { return await store.read(fresh.id); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         return store.save(fresh);
       });
     }),
-    openBranch: procedure.input(z.object({ branch: z.string().min(1) })).mutation(async ({ input }) => {
-      const fresh = await loadBranchReview(input.branch, store);
+    openBranch: procedure.input(scoped.extend({ branch: z.string().min(1) })).mutation(async ({ input }) => {
+      const fresh = await loadBranchReview(input.branch, store, checkoutRepo(input.checkout));
       return store.transaction(async () => {
         try { return await store.read(fresh.id); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -83,14 +85,24 @@ export function createRouter(store: ReviewStore) {
     previewGitHubReview: procedure.input(idInput).query(({ input }) => sync.preview(input.id)),
     submitReview: procedure.input(idInput.extend({ requestId: z.string().uuid(), event: z.enum(["COMMENT", "APPROVE", "REQUEST_CHANGES"]), body: z.string().max(50000) })).mutation(({ input }) => sync.submit(input.id, input.event, input.body, input.requestId)),
     clearUncertainSubmission: procedure.input(idInput).mutation(({ input }) => sync.clearUncertain(input.id)),
-    myPulls: procedure.query(() => listMyPulls()),
-    repository: procedure.query(() => githubRepo().slug),
+    myPulls: procedure.input(scoped.optional()).query(({ input }) => listMyPulls(undefined, checkoutRepo(input?.checkout))),
+    repository: procedure.input(scoped.optional()).query(({ input }) => githubRepo(checkoutRepo(input?.checkout)).slug),
+    // What a checkout (e.g. a T3 thread's worktree) is working on: its
+    // repository, branch, and the open PR for that branch if there is one.
+    checkout: procedure.input(z.object({ path: z.string().min(1).max(4096) })).query(async ({ input }) => {
+      const repo = checkoutRepo(input.path);
+      const github = githubRepoOrNull(repo);
+      const branch = currentBranch(repo);
+      const pull = github && branch ? await pullForBranch(github.slug, branch) : null;
+      return { repo, repository: github?.slug ?? null, branch, pull };
+    }),
     open: procedure
-      .input(z.object({ url: z.string().max(2048) }))
+      .input(scoped.extend({ url: z.string().max(2048) }))
       .mutation(async ({ input }) => {
         const fresh = await loadLocalReview(
-          await localPullMetadata(input.url),
+          await localPullMetadata(input.url, undefined, checkoutRepo(input.checkout)),
           store,
+          checkoutRepo(input.checkout),
         );
         return store.transaction(async () => {
           let review = fresh;
