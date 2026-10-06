@@ -90,6 +90,7 @@ export function App() {
       history.replaceState(null, "", location.pathname);
       api.myPulls.query(scope()).then(setStackPulls).catch(report);
       api.checkout.query({ path: checkout }).then((target) => {
+        if (target.pullError) toast.warning(t("checkoutPullUnknown", { branch: target.branch ?? "", error: target.pullError }), { id: "checkout-pull" });
         if (target.pull) void open(target.pull.url);
         else if (target.branch) { setBranchFocus((old) => ({ branch: target.branch!, n: (old?.n ?? 0) + 1 })); setView("branches"); }
         else setView("pulls");

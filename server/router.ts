@@ -93,8 +93,18 @@ export function createRouter(store: ReviewStore) {
       const repo = checkoutRepo(input.path);
       const github = githubRepoOrNull(repo);
       const branch = currentBranch(repo);
-      const pull = github && branch ? await pullForBranch(github.slug, branch) : null;
-      return { repo, repository: github?.slug ?? null, branch, pull };
+      // A failed lookup (gh signed in to an account without access, offline)
+      // must not hide the checkout: the branch's commits still open.
+      let pull = null;
+      let pullError: string | null = null;
+      if (github && branch) {
+        try {
+          pull = await pullForBranch(github.slug, branch);
+        } catch (error) {
+          pullError = error instanceof Error ? error.message : String(error);
+        }
+      }
+      return { repo, repository: github?.slug ?? null, branch, pull, pullError };
     }),
     open: procedure
       .input(scoped.extend({ url: z.string().max(2048) }))

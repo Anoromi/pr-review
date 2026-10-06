@@ -47,6 +47,7 @@
     "refreshPulls": "Refresh",
     "loadingPulls": "Loading your PRs…",
     "draftPr": "Draft",
+    "checkoutPullUnknown": "Couldn't look up a PR for {branch}, so showing its commits. {error}",
     "noMyPulls": "You have no open PRs in this repository.",
     "noMatchingPulls": "No PRs match your filter.",
     "urlLabel": "GitHub pull request URL",
