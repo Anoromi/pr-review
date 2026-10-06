@@ -56,7 +56,7 @@ LOCAL_REPO=/path/to/your/checkout
 # GITHUB_REPO=owner/name
 ```
 
-Opening `?checkout=<absolute path>` (for example from a hyprnav browser slot, which passes a T3 thread's worktree) reviews that checkout instead: its repository and current branch come from Git, so any project works without configuration. If the branch has an open PR, the PR opens; otherwise the branch's commits are listed. The tab keeps that checkout for the rest of its session.
+Opening `?checkout=<absolute path>` (for example from a hyprnav browser slot, which passes a T3 thread's worktree) reviews that checkout instead: its repository and current branch come from Git, so any project works without configuration. If the branch has an open PR, the PR opens; otherwise the branch's commits are listed. The parameter stays in the URL (an opened review adds `&review=`), so jumping to the same checkout again leaves the URL unchanged and the browser only focuses the tab.
 
 GitHub remotes are recognised in HTTPS, SSH and scp-like form, including SSH host aliases from `~/.ssh/config` (resolved with `ssh -G`).
 

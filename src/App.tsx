@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Keys } from "@/components/ui/key-hint";
 import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
-import { api, scope, setCheckout } from "./api";
+import { api, scope, setReviewParam } from "./api";
 import type { Review } from "../shared/types";
 import { Workspace } from "./Workspace";
 import { MyPulls } from "./MyPulls";
@@ -57,7 +57,7 @@ export function App() {
   const [stackPulls, setStackPulls] = useState<MyPullRequest[]>([]);
   const [view, setView] = useState<View>(() => {
     const params = new URLSearchParams(location.search);
-    return params.has("review") && !params.has("checkout") ? "review" : "pulls";
+    return params.has("review") ? "review" : "pulls";
   });
   // Bumped to remount the branch view on a branch (a checkout without a PR).
   const [branchFocus, setBranchFocus] = useState<{ branch: string; n: number }>();
@@ -80,14 +80,26 @@ export function App() {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     // `?checkout=` comes from hyprnav: a T3 thread's slot points this tab at
-    // the directory the thread works in. The tab then reviews that checkout's
+    // the directory the thread works in, and the tab reviews that checkout's
     // repository: its open PR for the current branch, or else the branch's
-    // commits. The parameter is dropped once read, so the next jump to the
-    // same checkout still navigates; the tab keeps it for the session.
+    // commits. The parameter stays put. A `review` next to it is kept on a
+    // reload of the same checkout; arriving from another checkout, it is the
+    // previous checkout's and is dropped.
     const checkout = params.get("checkout");
+    const reviewId = params.get("review");
+    let sameCheckout = false;
+    try {
+      sameCheckout = sessionStorage.getItem("pr-review:last-checkout") === checkout;
+      if (checkout) sessionStorage.setItem("pr-review:last-checkout", checkout);
+    } catch {}
+    if (checkout && reviewId && sameCheckout && /^[a-f0-9]{24}$/.test(reviewId)) {
+      api.myPulls.query(scope()).then(setStackPulls).catch(report);
+      void switchReview(reviewId);
+      return;
+    }
     if (checkout) {
-      setCheckout(checkout);
-      history.replaceState(null, "", location.pathname);
+      if (reviewId) setReviewParam(undefined);
+      setView("pulls");
       api.myPulls.query(scope()).then(setStackPulls).catch(report);
       api.checkout.query({ path: checkout }).then((target) => {
         if (target.pullError) toast.warning(t("checkoutPullUnknown", { branch: target.branch ?? "", error: target.pullError }), { id: "checkout-pull" });
@@ -107,7 +119,7 @@ export function App() {
   }, [theme]);
   useEffect(() => {
     if (!review) return;
-    history.replaceState(null, "", `?review=${review.id}`);
+    setReviewParam(review.id);
     let cancelled = false;
     api.export
       .query({ id: review.id })
