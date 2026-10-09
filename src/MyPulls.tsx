@@ -143,6 +143,7 @@ export function MyPulls({ visible, busy, currentUrl, onOpen, onLoaded }: {
               <span className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: order === "stack" ? depth * 18 : 0 }}>
                 {order === "stack" && depth > 0 && <CornerDownRight className="size-3 shrink-0 text-muted-foreground" aria-label={t("stackParent", { number: parent ?? 0 })} />}
                 <span className="truncate font-medium" title={pull.title}>{pull.title}</span>
+                {pull.checkoutAuthor && <span className="shrink-0 text-xs text-muted-foreground">{t("checkoutPullAuthor", { author: pull.checkoutAuthor })}</span>}
                 {pull.url === currentUrl && <span className="shrink-0 text-xs text-muted-foreground">{t("currentPullRequest")}</span>}
               </span>
               <span className="truncate font-mono text-xs text-muted-foreground" title={pull.headRefName}>{pull.headRefName}</span>

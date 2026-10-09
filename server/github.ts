@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import type { Review } from "../shared/types";
 import { parseFiles } from "../shared/diff";
-import { githubRepo, localRepo } from "./repository";
+import { githubRepo, githubRepoOrNull, localRepo } from "./repository";
 
 const execute = promisify(execFile);
 
@@ -16,6 +16,8 @@ export interface MyPullRequest {
   isCrossRepository: boolean;
   isDraft: boolean;
   updatedAt: string;
+  /** Set on the open PR of the checkout's branch when someone else wrote it. */
+  checkoutAuthor?: string;
 }
 
 let knownPulls: MyPullRequest[] = [];
@@ -179,10 +181,26 @@ export async function loadPullRequest(
 }
 
 /** The open PR whose head is `branch` in `slug` (any author), or null. */
-export async function pullForBranch(slug: string, branch: string, run = gh): Promise<MyPullRequest | null> {
-  const pulls: MyPullRequest[] = JSON.parse(await run([
+export async function pullForBranch(slug: string, branch: string, run = gh): Promise<(MyPullRequest & { author: string }) | null> {
+  const pulls: Array<MyPullRequest & { author?: { login?: string } }> = JSON.parse(await run([
     "pr", "list", "--repo", slug, "--head", branch, "--state", "open", "--limit", "1",
-    "--json", "number,title,url,headRefName,baseRefName,isCrossRepository,isDraft,updatedAt",
+    "--json", "number,title,url,headRefName,baseRefName,isCrossRepository,isDraft,updatedAt,author",
   ]));
-  return pulls[0] ?? null;
+  const pull = pulls[0];
+  return pull ? { ...pull, author: pull.author?.login ?? "" } : null;
+}
+
+/**
+ * Your open PRs, plus the open PR of the checkout's branch when someone else
+ * wrote it: a checkout of a teammate's branch should list the PR it opened.
+ */
+export async function listCheckoutPulls(repo: string, branch: string | null, run = gh): Promise<MyPullRequest[]> {
+  const mine = await listMyPulls(run, repo);
+  const slug = githubRepoOrNull(repo)?.slug;
+  if (!slug || !branch || mine.some((pull) => pull.headRefName === branch)) return mine;
+  const theirs = await pullForBranch(slug, branch, run).catch(() => null);
+  if (!theirs) return mine;
+  const { author, ...pull } = theirs;
+  knownPulls = [...knownPulls, pull];
+  return [{ ...pull, checkoutAuthor: author || "?" }, ...mine];
 }

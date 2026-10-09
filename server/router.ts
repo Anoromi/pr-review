@@ -8,7 +8,7 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ReviewStore } from "./store";
-import { localPullMetadata, listMyPulls, pullForBranch } from "./github";
+import { localPullMetadata, listCheckoutPulls, listMyPulls, pullForBranch } from "./github";
 import { checkoutRepo, currentBranch, githubRepo, githubRepoOrNull } from "./repository";
 import { markdown } from "./markdown";
 import { parseFiles, selectedCode } from "../shared/diff";
@@ -85,7 +85,10 @@ export function createRouter(store: ReviewStore) {
     previewGitHubReview: procedure.input(idInput).query(({ input }) => sync.preview(input.id)),
     submitReview: procedure.input(idInput.extend({ requestId: z.string().uuid(), event: z.enum(["COMMENT", "APPROVE", "REQUEST_CHANGES"]), body: z.string().max(50000) })).mutation(({ input }) => sync.submit(input.id, input.event, input.body, input.requestId)),
     clearUncertainSubmission: procedure.input(idInput).mutation(({ input }) => sync.clearUncertain(input.id)),
-    myPulls: procedure.input(scoped.optional()).query(({ input }) => listMyPulls(undefined, checkoutRepo(input?.checkout))),
+    myPulls: procedure.input(scoped.optional()).query(({ input }) => {
+      const repo = checkoutRepo(input?.checkout);
+      return input?.checkout ? listCheckoutPulls(repo, currentBranch(repo)) : listMyPulls(undefined, repo);
+    }),
     repository: procedure.input(scoped.optional()).query(({ input }) => githubRepo(checkoutRepo(input?.checkout)).slug),
     // What a checkout (e.g. a T3 thread's worktree) is working on: its
     // repository, branch, and the open PR for that branch if there is one.

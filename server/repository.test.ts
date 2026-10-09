@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkoutRepo, currentBranch, githubRepoOrNull, parseGitHubRemote } from "./repository";
-import { pullForBranch } from "./github";
+import { listCheckoutPulls, pullForBranch } from "./github";
 
 test("GitHub remotes parse in every form, including SSH host aliases", () => {
   const slug = (url: string, resolve?: (host: string) => string) => parseGitHubRemote(url, resolve)?.slug ?? null;
@@ -40,4 +40,15 @@ test("the PR for a branch is looked up by head in the checkout's repository", as
   assert.equal(pull?.number, 7);
   assert.deepEqual(command.slice(0, 6), ["pr", "list", "--repo", "acme/widgets", "--head", "feature/thing"]);
   assert.equal(await pullForBranch("acme/widgets", "none", async () => "[]"), null);
+});
+
+test("a checkout of someone else's branch lists that PR first, marked with its author", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "pr-review-theirs-"));
+  execFileSync("git", ["init", "-q", repo]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/acme/widgets.git"]);
+  const row = (number: number, head: string, extra = {}) => ({ number, title: `PR ${number}`, url: `https://github.com/acme/widgets/pull/${number}`, headRefName: head, baseRefName: "main", isCrossRepository: false, isDraft: false, updatedAt: "2026-01-01T00:00:00Z", ...extra });
+  const run = async (args: string[]) => JSON.stringify(args.includes("@me") ? [row(1, "mine")] : [row(9, "rj/thing", { author: { login: "rj" } })]);
+  const pulls = await listCheckoutPulls(repo, "rj/thing", run);
+  assert.deepEqual(pulls.map((pull) => [pull.number, pull.checkoutAuthor]), [[9, "rj"], [1, undefined]]);
+  assert.deepEqual((await listCheckoutPulls(repo, "mine", run)).map((pull) => pull.number), [1]);
 });

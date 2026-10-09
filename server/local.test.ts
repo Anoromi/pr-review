@@ -188,3 +188,21 @@ test("fetches another PR without local branches, refreshes its refs, and leaves 
     const fork = await loadLocalReview({ ...pull, isCrossRepository: true }, store, repo);
     assert.equal(fork.id, newer.id);
   }));
+
+test("the base comes from origin, so a stale local main does not pull merged work into the review", async () =>
+  fixture(async (repo, store, git) => {
+    const base = (await git("rev-parse", "main")).trim();
+    await git("checkout", "main");
+    await writeFile(join(repo, "merged.txt"), "merged elsewhere\n");
+    await git("add", ".");
+    await git("commit", "-m", "merged to main");
+    await git("checkout", "feature");
+    await git("merge", "--no-edit", "main");
+    const remote = join(repo, "..", "remote.git");
+    await execute("git", ["clone", "--bare", repo, remote]);
+    await git("config", `url.${remote}.insteadOf`, "git@github.com:acme/widgets.git");
+    await git("branch", "-f", "main", base);
+    const review = await loadLocalReview(pull, store, repo);
+    assert.match(review.patch, /\+unpushed/);
+    assert.doesNotMatch(review.patch, /merged elsewhere/);
+  }));

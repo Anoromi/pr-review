@@ -72,19 +72,24 @@ export async function loadLocalReview(
     } catch { return undefined; }
   }
   const localHead = pull.isCrossRepository ? undefined : await branch(pull.headRefName);
-  const localBase = await branch(pull.baseRefName);
   let head = localHead;
-  let base = localBase;
-  if (!head || !base) {
-    const headRef = `refs/pr-review/${source.number}/head`;
-    const baseRef = `refs/pr-review/${source.number}/base`;
-    await git(repo, ["check-ref-format", `refs/heads/${pull.baseRefName}`]);
+  // The base always comes from origin: a local base branch is often stale,
+  // and diffing against an old `main` pulls everything merged since into
+  // the review. Offline, a local base branch still works.
+  const headRef = `refs/pr-review/${source.number}/head`;
+  const baseRef = `refs/pr-review/${source.number}/base`;
+  await git(repo, ["check-ref-format", `refs/heads/${pull.baseRefName}`]);
+  let base: string | undefined;
+  try {
     await git(repo, ["fetch", "--no-tags", "--no-write-fetch-head", "--atomic", "origin",
       ...(!head ? [`+refs/pull/${source.number}/head:${headRef}`] : []),
       `+refs/heads/${pull.baseRefName}:${baseRef}`,
     ]);
-    head ??= (await git(repo, ["rev-parse", "--verify", `${headRef}^{commit}`])).trim();
     base = (await git(repo, ["rev-parse", "--verify", `${baseRef}^{commit}`])).trim();
+    head ??= (await git(repo, ["rev-parse", "--verify", `${headRef}^{commit}`])).trim();
+  } catch (error) {
+    base = await branch(pull.baseRefName);
+    if (!head || !base) throw error;
   }
   const mergeBase = (await git(repo, ["merge-base", base, head])).trim();
   const worktrees = (

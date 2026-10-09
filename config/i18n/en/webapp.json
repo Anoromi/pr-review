@@ -125,6 +125,7 @@
     "choosePull": "No PR selected",
     "switchPullRequest": "Switch PR",
     "currentPullRequest": "Current PR",
+    "checkoutPullAuthor": "This checkout · by {author}",
     "currentStack": "Current stack",
     "noStack": "No stack found",
     "noStackSelected": "No stack selected",
