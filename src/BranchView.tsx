@@ -25,6 +25,15 @@ export function BranchView({ visible, initialBranch, currentCommit, busy, onOpen
   const [loading, setLoading] = useState(false);
   const [index, setIndex] = useState(0);
   const list = useRef<HTMLDivElement>(null);
+  // The review (and with it the branch) loads after this view mounts, and a
+  // jump can open another one: follow it instead of staying on the fallback.
+  useEffect(() => {
+    if (!initialBranch || initialBranch === branch) return;
+    // A PR head that is not a local branch has no commit list here.
+    if (branches.length && !branches.includes(initialBranch)) return;
+    setBranch(initialBranch);
+    setAuthor(""); setSearch(""); setCommits([]); setMore(false); setLimit(0); setIndex(0);
+  }, [initialBranch]);
   useEffect(() => {
     if (!visible || branches.length) return;
     let alive = true;
