@@ -8,6 +8,7 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ReviewStore } from "./store";
+import { readFilters, writeFilters } from "./filters";
 import { localPullMetadata, listCheckoutPulls, listMyPulls, pullForBranch } from "./github";
 import { checkoutRepo, currentBranch, githubRepo, githubRepoOrNull } from "./repository";
 import { markdown } from "./markdown";
@@ -89,6 +90,15 @@ export function createRouter(store: ReviewStore) {
       const repo = checkoutRepo(input?.checkout);
       return input?.checkout ? listCheckoutPulls(repo, currentBranch(repo)) : listMyPulls(undefined, repo);
     }),
+    // File filters of the checkout's repository (see server/filters.ts).
+    filters: procedure.input(scoped.optional()).query(({ input }) => readFilters(store.root, checkoutRepo(input?.checkout))),
+    saveFilters: procedure
+      .input(scoped.extend({ filters: z.array(z.object({
+        name: z.string().trim().min(1).max(80),
+        patterns: z.array(z.string().max(500)).max(200),
+        enabled: z.boolean(),
+      })).max(50) }))
+      .mutation(({ input }) => writeFilters(store.root, checkoutRepo(input.checkout), input.filters)),
     repository: procedure.input(scoped.optional()).query(({ input }) => githubRepo(checkoutRepo(input?.checkout)).slug),
     // What a checkout (e.g. a T3 thread's worktree) is working on: its
     // repository, branch, and the open PR for that branch if there is one.

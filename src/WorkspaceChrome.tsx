@@ -23,10 +23,12 @@ function split(name: string) {
   return [name.slice(0, slash), name.slice(slash)];
 }
 
-export const FileSidebar = memo(function FileSidebar({ files, active, viewed, stats, comments, onPick }: {
+export const FileSidebar = memo(function FileSidebar({ files, active, viewed, filtered = 0, stats, comments, onPick }: {
   files: FileDiffMetadata[];
   active: string;
   viewed: string[];
+  /** Files the repository's filters leave out of this list. */
+  filtered?: number;
   stats: Map<string, Stats>;
   comments: Map<string, number>;
   onPick: (file: string) => void;
@@ -41,7 +43,7 @@ export const FileSidebar = memo(function FileSidebar({ files, active, viewed, st
     <aside className="flex w-[260px] shrink-0 flex-col border-r bg-panel">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b px-3 text-xs">
         <span className="font-semibold">{t("files")}</span>
-        <span className="tabular-nums text-muted-foreground">{t("progress", { viewed: viewed.length, total: files.length })}</span>
+        <span className="truncate tabular-nums text-muted-foreground">{t("progress", { viewed: viewed.length, total: files.length })}{filtered > 0 && ` · ${t("filteredOut", { count: filtered })}`}</span>
         <Keys value="f" className="ml-auto" />
       </div>
       <div className="h-0.5 shrink-0 bg-border" role="progressbar" aria-label={t("viewed")} aria-valuemin={0} aria-valuemax={files.length} aria-valuenow={viewed.length}>

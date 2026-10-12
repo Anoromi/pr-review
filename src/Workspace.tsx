@@ -34,7 +34,9 @@ import type {
   SelectedLineRange,
 } from "@pierre/diffs";
 import { useTranslations } from "use-intl";
-import { api } from "./api";
+import { api, scope } from "./api";
+import { FiltersDialog } from "./FiltersDialog";
+import { filteredFiles, type FileFilter } from "../shared/filters";
 import { fileStats, selectedCode } from "../shared/diff";
 import type { Comment, Review } from "../shared/types";
 
@@ -72,7 +74,27 @@ function readDraft(key: string): Draft | undefined {
 
 export function Workspace({ review, change, saving, theme, path }: Props) {
   const t = useTranslations("app");
-  const files = useMemo(() => reviewFiles(review), [review.id, review.patch]);
+  const allFiles = useMemo(() => reviewFiles(review), [review.id, review.patch]);
+  // The repository's file filters leave matching files out of the review:
+  // everything below works on `files`, the ones that remain.
+  const filterScope = review.source.kind === "local" ? { checkout: review.source.repo } : scope();
+  const [filters, setFilters] = useState<FileFilter[]>([]);
+  const [showFiltered, setShowFiltered] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.filters.query(filterScope).then((next) => { if (alive) setFilters(next); }).catch(() => {});
+    return () => { alive = false; };
+  }, [filterScope.checkout]);
+  const filtered = useMemo(() => filteredFiles(allFiles.map((file) => file.name), filters), [allFiles, filters]);
+  const files = useMemo(
+    () => showFiltered || !filtered.size ? allFiles : allFiles.filter((file) => !filtered.has(file.name)),
+    [allFiles, filtered, showFiltered],
+  );
+  const viewedFiles = useMemo(() => {
+    const names = new Set(files.map((file) => file.name));
+    return review.viewed.filter((name) => names.has(name));
+  }, [files, review.viewed]);
   const viewer = useRef<CodeViewHandle<Annotation, undefined>>(null);
   const focusDraft = useRef(false);
   const [active, setActive] = useState(() => {
@@ -88,6 +110,9 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     () => new Set(review.generatedFiles ?? []),
   );
   const collapsed = collapsedFiles.has(active);
+  useEffect(() => {
+    if (files.length && !files.some((file) => file.name === active)) setActive(files[0].name);
+  }, [files]);
   const [sidebar, setSidebar] = useState(() => {
     try {
       return localStorage.getItem("pr-review:sidebar") !== "off";
@@ -969,6 +994,11 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     { id: "layoutToggle", group: "view", keys: ["u"], run: () => setLayout(layout === "split" ? "unified" : "split") },
     { id: "wrapToggle", group: "view", keys: ["g w"], run: () => setWrap(!wrap) },
     { id: "sidebarToggle", group: "view", keys: ["\\"], run: toggleSidebar },
+    { id: "filtersEdit", group: "files", keys: ["g f"], run: () => setFiltersOpen(true) },
+    { id: "filtersToggle", group: "files", keys: ["z f"], enabled: () => filtered.size > 0, run: () => {
+      toast(showFiltered ? t("filtersApplied", { count: filtered.size }) : t("filtersShown"), { id: "filters" });
+      setShowFiltered(!showFiltered);
+    } },
   ];
   useCommands(commands);
 
@@ -1041,7 +1071,8 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
           <FileSidebar
             files={files}
             active={active}
-            viewed={review.viewed}
+            viewed={viewedFiles}
+            filtered={showFiltered ? 0 : filtered.size}
             stats={statsByFile}
             comments={commentCounts}
             onPick={openFile}
@@ -1224,7 +1255,7 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
         }) : ""}
         search={searchQuery ? { query: searchQuery, index: matchIndex, total: searchMatches.current.length } : undefined}
         draft={draft?.file}
-        viewed={review.viewed.length}
+        viewed={viewedFiles.length}
         total={total}
         saving={saving}
         path={path}
@@ -1236,6 +1267,13 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
         viewed={review.viewed}
         comments={commentCounts}
         onPick={openFile}
+      />
+      <FiltersDialog
+        open={filtersOpen}
+        onOpenChange={setFiltersOpen}
+        filters={filters}
+        files={allFiles.map((file) => file.name)}
+        onSave={async (next) => { setFilters(await api.saveFilters.mutate({ ...filterScope, filters: next })); setShowFiltered(false); }}
       />
       <CommentsDialog open={commentsOpen} onOpenChange={setCommentsOpen} comments={review.comments} renderReply={(comment, selected) => <ReplyComposer key={comment.id} comment={comment} review={review} change={change} showHotkey={selected} hotkey="r" />} onJump={(comment) => {
         if (comment.snapshotId && comment.snapshotId !== review.id) {
