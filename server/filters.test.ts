@@ -16,7 +16,7 @@ const files = [
   "tests/fixtures/sample.json",
 ];
 
-test("enabled filters hide matching files with gitignore patterns", () => {
+test("enabled filters match files with gitignore patterns", () => {
   const hidden = (patterns: string[], enabled = true) => [...filteredFiles(files, [{ name: "tests", patterns, enabled }])];
   assert.deepEqual(hidden(["tests/"]), ["apps/api/tests/handler.rs", "tests/fixtures/sample.json"]);
   assert.deepEqual(hidden(["/tests/"]), ["tests/fixtures/sample.json"]);

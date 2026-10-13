@@ -74,30 +74,18 @@ function readDraft(key: string): Draft | undefined {
 
 export function Workspace({ review, change, saving, theme, path }: Props) {
   const t = useTranslations("app");
-  const allFiles = useMemo(() => reviewFiles(review), [review.id, review.patch]);
-  // The repository's file filters leave matching files out of the review:
-  // everything below works on `files`, the ones that remain.
+  const files = useMemo(() => reviewFiles(review), [review.id, review.patch]);
+  // The repository's file filters: matching files stay in the review but
+  // start collapsed, like generated files (see the effect below).
   const filterScope = review.source.kind === "local" ? { checkout: review.source.repo } : scope();
   const [filters, setFilters] = useState<FileFilter[]>([]);
-  const [showFiltered, setShowFiltered] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   useEffect(() => {
     let alive = true;
     api.filters.query(filterScope).then((next) => { if (alive) setFilters(next); }).catch(() => {});
     return () => { alive = false; };
   }, [filterScope.checkout]);
-  const filtered = useMemo(() => filteredFiles(allFiles.map((file) => file.name), filters), [allFiles, filters]);
-  // A change made only of filtered files (a commit that touches just tests)
-  // would come up empty, so the filters step aside for it.
-  const allFiltered = filtered.size > 0 && filtered.size === allFiles.length;
-  const files = useMemo(
-    () => showFiltered || !filtered.size || allFiltered ? allFiles : allFiles.filter((file) => !filtered.has(file.name)),
-    [allFiles, filtered, showFiltered, allFiltered],
-  );
-  const viewedFiles = useMemo(() => {
-    const names = new Set(files.map((file) => file.name));
-    return review.viewed.filter((name) => names.has(name));
-  }, [files, review.viewed]);
+  const filtered = useMemo(() => filteredFiles(files.map((file) => file.name), filters), [files, filters]);
   const viewer = useRef<CodeViewHandle<Annotation, undefined>>(null);
   const focusDraft = useRef(false);
   const [active, setActive] = useState(() => {
@@ -113,9 +101,20 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     () => new Set(review.generatedFiles ?? []),
   );
   const collapsed = collapsedFiles.has(active);
+  // Filters arrive after the first render and can be edited: collapse what
+  // newly matches, and reopen what an earlier set collapsed but this one
+  // no longer does. Files the reader toggled since keep their state.
+  const appliedFilter = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (files.length && !files.some((file) => file.name === active)) setActive(files[0].name);
-  }, [files]);
+    const previous = appliedFilter.current;
+    appliedFilter.current = filtered;
+    setCollapsedFiles((current) => {
+      const next = new Set(current);
+      for (const name of filtered) if (!previous.has(name)) next.add(name);
+      for (const name of previous) if (!filtered.has(name)) next.delete(name);
+      return next;
+    });
+  }, [filtered]);
   const [sidebar, setSidebar] = useState(() => {
     try {
       return localStorage.getItem("pr-review:sidebar") !== "off";
@@ -998,9 +997,14 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     { id: "wrapToggle", group: "view", keys: ["g w"], run: () => setWrap(!wrap) },
     { id: "sidebarToggle", group: "view", keys: ["\\"], run: toggleSidebar },
     { id: "filtersEdit", group: "files", keys: ["g f"], run: () => setFiltersOpen(true) },
-    { id: "filtersToggle", group: "files", keys: ["z f"], enabled: () => filtered.size > 0 && !allFiltered, run: () => {
-      toast(showFiltered ? t("filtersApplied", { count: filtered.size }) : t("filtersShown"), { id: "filters" });
-      setShowFiltered(!showFiltered);
+    { id: "filtersToggle", group: "files", keys: ["z f"], enabled: () => filtered.size > 0, run: () => {
+      // Expand the filtered files if all are collapsed, otherwise collapse them.
+      const expand = [...filtered].every((name) => collapsedFiles.has(name));
+      setCollapsedFiles((current) => {
+        const next = new Set(current);
+        for (const name of filtered) if (expand) next.delete(name); else next.add(name);
+        return next;
+      });
     } },
   ];
   useCommands(commands);
@@ -1074,9 +1078,8 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
           <FileSidebar
             files={files}
             active={active}
-            viewed={viewedFiles}
-            filtered={showFiltered || allFiltered ? 0 : filtered.size}
-            allFiltered={allFiltered}
+            viewed={review.viewed}
+            filtered={filtered}
             stats={statsByFile}
             comments={commentCounts}
             onPick={openFile}
@@ -1259,7 +1262,7 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
         }) : ""}
         search={searchQuery ? { query: searchQuery, index: matchIndex, total: searchMatches.current.length } : undefined}
         draft={draft?.file}
-        viewed={viewedFiles.length}
+        viewed={review.viewed.length}
         total={total}
         saving={saving}
         path={path}
@@ -1276,8 +1279,8 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
         open={filtersOpen}
         onOpenChange={setFiltersOpen}
         filters={filters}
-        files={allFiles.map((file) => file.name)}
-        onSave={async (next) => { setFilters(await api.saveFilters.mutate({ ...filterScope, filters: next })); setShowFiltered(false); }}
+        files={files.map((file) => file.name)}
+        onSave={async (next) => { setFilters(await api.saveFilters.mutate({ ...filterScope, filters: next })); }}
       />
       <CommentsDialog open={commentsOpen} onOpenChange={setCommentsOpen} comments={review.comments} renderReply={(comment, selected) => <ReplyComposer key={comment.id} comment={comment} review={review} change={change} showHotkey={selected} hotkey="r" />} onJump={(comment) => {
         if (comment.snapshotId && comment.snapshotId !== review.id) {

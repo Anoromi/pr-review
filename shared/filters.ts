@@ -2,7 +2,7 @@ import ignore from "ignore";
 
 /**
  * A named set of gitignore-style patterns. Files matching an enabled filter
- * are left out of a review: `tests/` hides every directory called tests,
+ * start collapsed in a review: `tests/` hides every directory called tests,
  * `*.test.ts` every such file, `/docs/` only the top-level directory, and a
  * leading `!` keeps files an earlier file pattern would hide.
  */
@@ -12,7 +12,7 @@ export interface FileFilter {
   enabled: boolean;
 }
 
-/** The files the enabled filters hide. Invalid patterns match nothing. */
+/** The files the enabled filters match. Invalid patterns match nothing. */
 export function filteredFiles(names: readonly string[], filters: readonly FileFilter[]): Set<string> {
   const hidden = new Set<string>();
   for (const filter of filters) {
