@@ -87,9 +87,12 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     return () => { alive = false; };
   }, [filterScope.checkout]);
   const filtered = useMemo(() => filteredFiles(allFiles.map((file) => file.name), filters), [allFiles, filters]);
+  // A change made only of filtered files (a commit that touches just tests)
+  // would come up empty, so the filters step aside for it.
+  const allFiltered = filtered.size > 0 && filtered.size === allFiles.length;
   const files = useMemo(
-    () => showFiltered || !filtered.size ? allFiles : allFiles.filter((file) => !filtered.has(file.name)),
-    [allFiles, filtered, showFiltered],
+    () => showFiltered || !filtered.size || allFiltered ? allFiles : allFiles.filter((file) => !filtered.has(file.name)),
+    [allFiles, filtered, showFiltered, allFiltered],
   );
   const viewedFiles = useMemo(() => {
     const names = new Set(files.map((file) => file.name));
@@ -995,7 +998,7 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     { id: "wrapToggle", group: "view", keys: ["g w"], run: () => setWrap(!wrap) },
     { id: "sidebarToggle", group: "view", keys: ["\\"], run: toggleSidebar },
     { id: "filtersEdit", group: "files", keys: ["g f"], run: () => setFiltersOpen(true) },
-    { id: "filtersToggle", group: "files", keys: ["z f"], enabled: () => filtered.size > 0, run: () => {
+    { id: "filtersToggle", group: "files", keys: ["z f"], enabled: () => filtered.size > 0 && !allFiltered, run: () => {
       toast(showFiltered ? t("filtersApplied", { count: filtered.size }) : t("filtersShown"), { id: "filters" });
       setShowFiltered(!showFiltered);
     } },
@@ -1072,7 +1075,8 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
             files={files}
             active={active}
             viewed={viewedFiles}
-            filtered={showFiltered ? 0 : filtered.size}
+            filtered={showFiltered || allFiltered ? 0 : filtered.size}
+            allFiltered={allFiltered}
             stats={statsByFile}
             comments={commentCounts}
             onPick={openFile}

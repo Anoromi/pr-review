@@ -80,6 +80,7 @@
     "viewed": "Viewed",
     "progress": "{viewed} of {total} files viewed",
     "filteredOut": "{count} filtered",
+    "filtersSkipped": "filters skipped",
     "fileFilters": "File filters",
     "fileFiltersDescription": "Files matching an enabled filter are left out of reviews in this repository. One gitignore-style pattern per line: tests/ hides every directory named tests, *.test.ts every such file, /docs/ only the top-level directory, and !*.snap.test.ts keeps files an earlier file pattern would hide.",
     "filterName": "Filter name",

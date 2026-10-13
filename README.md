@@ -103,7 +103,7 @@ Commands live in one table per view (`useCommands` in `src/keys.ts`). To rebind,
 
 ## File filters
 
-`gf` opens the repository's file filters: named lists of gitignore-style patterns (`tests/`, `*.test.ts`, `/docs/`). Files matching an enabled filter are left out of every review of that repository: the file list, the diff and the viewed count. The sidebar shows how many were filtered, and `zf` shows or hides them for the current review. Filters are stored in `.reviews/filters/`, keyed by the GitHub repository, so all its checkouts share them and nothing is written to the reviewed repository.
+`gf` opens the repository's file filters: named lists of gitignore-style patterns (`tests/`, `*.test.ts`, `/docs/`). Files matching an enabled filter are left out of every review of that repository: the file list, the diff and the viewed count. The sidebar shows how many were filtered, and `zf` shows or hides them for the current review. When every file of a change matches a filter (a commit that only touches tests), the filters are not applied to it. Filters are stored in `.reviews/filters/`, keyed by the GitHub repository, so all its checkouts share them and nothing is written to the reviewed repository.
 
 ## Agent conversations
 
