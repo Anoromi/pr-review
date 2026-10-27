@@ -39,7 +39,9 @@ import { useTranslations } from "use-intl";
 import { api, scope } from "./api";
 import { FiltersDialog } from "./FiltersDialog";
 import { filteredFiles, type FileFilter } from "../shared/filters";
-import { fileStats, selectedCode } from "../shared/diff";
+import { fileStats, parseFiles, selectedCode } from "../shared/diff";
+import { chapterPatch, resolveMap, type ReviewMap } from "../shared/map";
+import { ChapterHeader, MapSidebar, skippable } from "./ReviewMap";
 import type { Comment, Review } from "../shared/types";
 
 type Draft = Pick<Comment, "file" | "side" | "start" | "end" | "body"> & {
@@ -78,7 +80,48 @@ function readDraft(key: string): Draft | undefined {
 
 export function Workspace({ review, change, saving, theme, path }: Props) {
   const t = useTranslations("app");
-  const files = useMemo(() => reviewFiles(review), [review.id, review.patch]);
+  const allFiles = useMemo(() => reviewFiles(review), [review.id, review.patch]);
+  // The review map (map.json, written by an agent): chapters of hunks in
+  // reading order. Not for single commits, whose hunks it does not name.
+  const mapAllowed = !(review.source.kind === "local" && review.source.branchReview && !review.source.branchComparison);
+  const [reviewMap, setReviewMap] = useState<ReviewMap | null>(null);
+  useEffect(() => {
+    if (!mapAllowed) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let last = "";
+    async function poll() {
+      try {
+        const next = await api.map.query({ id: review.id });
+        const text = JSON.stringify(next);
+        if (!stopped && text !== last) { last = text; setReviewMap(next); }
+        toast.dismiss("map");
+      } catch (error) {
+        if (!stopped) toast.error(error instanceof Error ? error.message : t("error"), { id: "map" });
+      }
+      if (!stopped) timer = setTimeout(poll, 2000);
+    }
+    void poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [review.id]);
+  const chapters = useMemo(() => reviewMap ? resolveMap(reviewMap, allFiles) : [], [reviewMap, allFiles]);
+  // The chapter shown, or null for the whole diff.
+  const [chapter, setChapter] = useState<number | null>(null);
+  const shownChapter = chapter !== null && chapter < chapters.length ? chapter : null;
+  // Files of which the chapter shows only some hunks: their unchanged context
+  // must not load, or expanding it would show the other hunks' lines as
+  // unchanged.
+  const partialFiles = useRef(new Set<string>());
+  const files = useMemo(() => {
+    partialFiles.current = new Set();
+    if (shownChapter === null) return allFiles;
+    const cut = parseFiles(chapterPatch(review.patch, allFiles, new Set(chapters[shownChapter].hunks)));
+    cut.forEach((file, index) => {
+      file.cacheKey = `${review.id}:chapter${shownChapter}:${index}`;
+      if (file.hunks.length < (allFiles.find((full) => full.name === file.name)?.hunks.length ?? 0)) partialFiles.current.add(file.name);
+    });
+    return cut;
+  }, [allFiles, chapters, shownChapter]);
   // The repository's file filters: matching files stay in the review but
   // start collapsed, like generated files (see the effect below).
   const filterScope = review.source.kind === "local" ? { checkout: review.source.repo } : scope();
@@ -105,6 +148,10 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     () => new Set(review.generatedFiles ?? []),
   );
   const collapsed = collapsedFiles.has(active);
+  // A chapter may not contain the active file.
+  useEffect(() => {
+    if (files.length && !files.some((file) => file.name === active)) setActive(files[0].name);
+  }, [files]);
   // Filters arrive after the first render and can be edited: collapse what
   // newly matches, and reopen what an earlier set collapsed but this one
   // no longer does. Files the reader toggled since keep their state.
@@ -331,6 +378,10 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
           });
       },
       loadDiffFiles: async (file: import("@pierre/diffs").FileDiffMetadata) => {
+        if (partialFiles.current.has(file.name)) {
+          toast.message(t("partialFileContext"), { id: "workspace" });
+          throw new Error(t("partialFileContext"));
+        }
         try {
           return await api.fileContext.query({
             id: review.id,
@@ -984,6 +1035,29 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
   }
 
   const nearby = () => nearbyThread(cursor.current);
+  function openChapter(index: number | null) {
+    endVisual();
+    setSelection(null);
+    cursor.current = null;
+    cursorPosition.set(null);
+    setChapter(index);
+    requestAnimationFrame(() => viewer.current?.scrollTo({ type: "position", position: 0, behavior: "instant" }));
+  }
+  // The next chapter worth reading: skip-safe ones are passed over.
+  function stepChapter(delta: 1 | -1) {
+    const from = shownChapter ?? (delta > 0 ? -1 : chapters.length);
+    for (let index = from + delta; index >= 0 && index < chapters.length; index += delta)
+      if (!skippable(chapters[index])) return openChapter(index);
+    toast.message(t(delta > 0 ? "lastChapter" : "firstChapter"), { id: "workspace" });
+  }
+  async function requestMap() {
+    const target = agentThread();
+    if (!target) return;
+    try {
+      await api.requestMap.mutate({ id: review.id, threadId: target.id });
+      toast.success(t("mapRequested", { title: target.title }), { id: "workspace" });
+    } catch (error) { toast.error(error instanceof Error ? error.message : t("error"), { id: "workspace" }); }
+  }
   const commands: Command[] = [
     { id: "cursorDown", group: "move", keys: ["t", "j", "ArrowDown"], hidden: true, run: (times) => moveLine(times ?? 1) },
     { id: "cursorUp", group: "move", keys: ["n", "k", "ArrowUp"], hidden: true, run: (times) => moveLine(-(times ?? 1)) },
@@ -1029,6 +1103,13 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     { id: "ask", group: "comments", keys: ["a"], enabled: () => !saving, run: () => commentHere(true) },
     { id: "explain", group: "comments", keys: ["A"], enabled: () => !saving, run: () => void explainHere() },
     { id: "agentThread", group: "comments", keys: ["g A"], run: () => { loadThreads(); setThreadPicker(true); } },
+    { id: "mapToggle", group: "jump", keys: ["M"], enabled: () => mapAllowed, run: () => {
+      if (!chapters.length) return void toast.message(t("noMap"), { id: "workspace" });
+      openChapter(shownChapter === null ? 0 : null);
+    } },
+    { id: "chapterNext", group: "jump", keys: [">"], enabled: () => chapters.length > 0, run: () => stepChapter(1) },
+    { id: "chapterPrevious", group: "jump", keys: ["<"], enabled: () => chapters.length > 0, run: () => stepChapter(-1) },
+    { id: "requestMap", group: "review", keys: ["g M"], enabled: () => mapAllowed && !saving, run: () => void requestMap() },
     { id: "reply", group: "comments", keys: ["r"], enabled: () => Boolean(nearby()), run: replyNearby },
     { id: "resolve", group: "comments", keys: ["x"], enabled: () => { const comment = nearby(); return Boolean(comment) && !saving && !(comment!.github && !comment!.github.canResolve); },
       run: () => { const comment = nearby()!; void change(() => api.resolveComment.mutate({ id: review.id, commentId: comment.id, resolved: !comment.resolved })); } },
@@ -1128,7 +1209,10 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" aria-busy={saving}>
       <div className="flex min-h-0 flex-1">
-        {sidebar && (
+        {sidebar && shownChapter !== null && (
+          <MapSidebar chapters={chapters} current={shownChapter} onPick={openChapter} />
+        )}
+        {sidebar && shownChapter === null && (
           <FileSidebar
             files={files}
             active={active}
@@ -1140,6 +1224,7 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
           />
         )}
         <main className="flex min-w-0 flex-1 flex-col">
+          {shownChapter !== null && <ChapterHeader chapter={chapters[shownChapter]} index={shownChapter} />}
           <CodeView<Annotation>
             ref={viewer}
             containerRef={scroll}

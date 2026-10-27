@@ -97,6 +97,7 @@ Defaults follow a Dvorak home row, with `j`/`k`/`l` and the arrow keys as aliase
 - **Cursor:** `h` `t` `n` `s` left/down/up/right, `T`/`N` 8 lines, `w` `b` `W` `B` words, `_` `-` line start/end, `Ctrl-d`/`Ctrl-u` half page, `gg`/`G` top/bottom, `Alt-h`/`Alt-s` old/new side, `Alt-t`/`Alt-n` reveal skipped lines.
 - **Jump:** `]` `[` next/previous file, `f` go to file, `}` `{` hunk, `)` `(` comment, `/` search, `;` `,` next/previous match.
 - **Files:** `Space` marks the file viewed, collapses it and moves to the next unviewed file. `m` toggles viewed. `za` `zc` `zo` toggle/collapse/expand, `zM` `zR` all files.
+- **Review map:** `M` map on/off, `>`/`<` next/previous chapter to read, `gM` ask the agent thread to write the map. See [Review map](#review-map).
 - **Ask the agent:** `a` asks the agent thread about the cursor line or selection, `A` asks it to explain them without typing, `gA` picks the thread. See [Ask the agent](#ask-the-agent).
 - **Comments:** `c` comments on the cursor line or selection (or returns to an unfinished draft). In the editor, `Ctrl-Enter` saves, `Ctrl-g` switches between local and GitHub, and `Esc` returns to the diff, keeping a non-empty draft. On a thread: `r` reply, `x` resolve/reopen, `e` edit, `D` twice to delete. `gc` lists all comments.
 - **Selection:** `v` characters, `V` lines, `y` copy, `Esc` cancel.
@@ -115,6 +116,12 @@ Commands live in one table per view (`useCommands` in `src/keys.ts`). To rebind,
 The T3 Code thread that wrote the code can answer questions about it in place. Put the cursor on a line or select a range, press `a`, type the question and press `Ctrl-Enter`; `A` sends "Explain this code" without opening the editor. pr-review sends the thread the question, the file and line range, the selected lines, and the diff hunks around them, with a `curl` command for the `reply` mutation. The agent's answer then appears under the lines like any reply.
 
 Questions go to the most recently active thread working in the review's checkout (its worktree, or the project root for threads without one). The status line shows it; `gA` lists the matching threads to pick another. Questions are saved as local comments marked with the thread, so `r`, `x` and `gc` work on them as on any comment. This needs `T3CODE_TOKEN` (see [Configuration](#configuration)).
+
+## Review map
+
+A review map groups the diff's hunks into chapters in reading order, each with why it exists, a risk (low, medium, high) and what to check. Press `gM` on a branch comparison (`m` in the branch view) or a PR: the agent thread gets the exact diff (`map-diff.patch`) and runs the `review-map` skill (`~/.agents/skills/review-map/SKILL.md`), which writes `map.json` beside `comments.json`. The app polls for it every two seconds and shows parse errors if the file is invalid.
+
+`M` shows the map as the sidebar and only the current chapter's hunks, with its why and check points above them; `M` again returns to the whole diff. `>` and `<` move between chapters, passing over skip-safe ones. Every hunk lands in exactly one chapter: hunks the map does not name are listed in a final **Uncovered** chapter, and references to hunks that are not in the diff are listed as stale on their chapter. Skip-safe chapters show their reason (moved code, generated, formatting, rename). For moved code the app checks that the chapter's removed lines are exactly its added lines, ignoring whitespace, and shows "verified" or "not verified"; unverified moves are not skipped. A file split across chapters shows no unchanged context, since expanding it would show other chapters' changes as unchanged. Single-commit reviews have no map.
 
 ## Agent conversations
 

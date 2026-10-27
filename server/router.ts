@@ -13,6 +13,8 @@ import { localPullMetadata, listCheckoutPulls, listMyPulls, pullForBranch } from
 import { checkoutRepo, currentBranch, githubRepo, githubRepoOrNull } from "./repository";
 import { markdown } from "./markdown";
 import { listThreads, sendToThread } from "./t3";
+import { reviewMapSchema } from "../shared/map";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { apiUrl } from "./port";
 import { hunkText, parseFiles, selectedCode } from "../shared/diff";
 import type { Comment, Review } from "../shared/types";
@@ -90,6 +92,29 @@ export function createRouter(store: ReviewStore) {
         await sendToThread(input.threadId, askMessage(current, comment, hunks));
         return store.update(input.id, (review) => { review.comments.push(comment); });
       }),
+    // The review map an agent wrote to map.json (see shared/map.ts), or null.
+    map: procedure.input(idInput).query(async ({ input }) => {
+      const file = join(store.prDirectory(await store.read(input.id)), "map.json");
+      let text: string;
+      try { text = await readFile(file, "utf8"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+      try { return reviewMapSchema.parse(JSON.parse(text)); }
+      catch (error) { throw new Error(`${file} is not a valid review map: ${error instanceof z.ZodError ? z.prettifyError(error) : error instanceof Error ? error.message : error}`); }
+    }),
+    // Asks the agent thread to write map.json for this review's diff.
+    requestMap: procedure.input(idInput.extend({ threadId: z.string().min(1) })).mutation(async ({ input }) => {
+      const review = await store.read(input.id);
+      await threadTitle(review, input.threadId);
+      const directory = store.prDirectory(review);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(join(directory, "map-diff.patch"), review.patch, { mode: 0o600 });
+      await sendToThread(input.threadId, [
+        `Run the review-map skill (~/.agents/skills/review-map/SKILL.md) for the review "${review.title}" in pr-review.`,
+        "",
+        `The diff to map is ${join(directory, "map-diff.patch")} (base ${review.baseRevision}, head ${review.revision}). Name hunks by the starts in its @@ headers.`,
+        `Write the map to ${join(directory, "map.json")}. pr-review shows it as soon as the file is valid; an invalid file shows its errors there.`,
+      ].join("\n"));
+    }),
     branches: procedure.input(scoped.optional()).query(({ input }) => listBranches(checkoutRepo(input?.checkout))),
     branchAuthors: procedure.input(scoped.extend({ branch: z.string().min(1) })).query(({ input }) => listBranchAuthors(input.branch, checkoutRepo(input.checkout))),
     branchCommits: procedure.input(scoped.extend({ branch: z.string().min(1), author: z.string().min(1).max(1000).optional(), search: z.string().trim().max(1000).default(""), skip: z.number().int().nonnegative().default(0) })).query(({ input }) => listBranchCommits(input.branch, input.skip, checkoutRepo(input.checkout), input.author, input.search)),
