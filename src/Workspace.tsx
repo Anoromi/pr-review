@@ -58,6 +58,10 @@ type Props = {
   saving: boolean;
   theme: "light" | "dark";
   path: string;
+  /** Opens the whole branch against its base, where the review map works; `showMap` shows the map there. */
+  openBranch: (showMap: boolean) => Promise<Review | undefined>;
+  /** Show the review map as soon as it loads (M pressed on a single commit). */
+  showMap: boolean;
 };
 
 function readDraft(key: string): Draft | undefined {
@@ -78,7 +82,7 @@ function readDraft(key: string): Draft | undefined {
 }
 
 
-export function Workspace({ review, change, saving, theme, path }: Props) {
+export function Workspace({ review, change, saving, theme, path, openBranch, showMap }: Props) {
   const t = useTranslations("app");
   const allFiles = useMemo(() => reviewFiles(review), [review.id, review.patch]);
   // The review map (map.json, written by an agent): chapters of hunks in
@@ -107,6 +111,16 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
   const chapters = useMemo(() => reviewMap ? resolveMap(reviewMap, allFiles) : [], [reviewMap, allFiles]);
   // The chapter shown, or null for the whole diff.
   const [chapter, setChapter] = useState<number | null>(null);
+  useEffect(() => {
+    if (!showMap) return;
+    api.map.query({ id: review.id })
+      .then((next) => {
+        if (!next) return void toast.message(t("noMap"), { id: "workspace" });
+        setReviewMap(next);
+        setChapter(0);
+      })
+      .catch((error) => toast.error(error instanceof Error ? error.message : t("error"), { id: "workspace" }));
+  }, [showMap, review.id]);
   const shownChapter = chapter !== null && chapter < chapters.length ? chapter : null;
   // Files of which the chapter shows only some hunks: their unchanged context
   // must not load, or expanding it would show the other hunks' lines as
@@ -1050,11 +1064,15 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
       if (!skippable(chapters[index])) return openChapter(index);
     toast.message(t(delta > 0 ? "lastChapter" : "firstChapter"), { id: "workspace" });
   }
+  // A single commit has no map: both go to the whole branch first.
   async function requestMap() {
     const target = agentThread();
     if (!target) return;
     try {
-      await api.requestMap.mutate({ id: review.id, threadId: target.id });
+      const id = mapAllowed ? review.id : (await openBranch(false))?.id;
+      // A failed open was reported where it happened.
+      if (!id) return;
+      await api.requestMap.mutate({ id, threadId: target.id });
       toast.success(t("mapRequested", { title: target.title }), { id: "workspace" });
     } catch (error) { toast.error(error instanceof Error ? error.message : t("error"), { id: "workspace" }); }
   }
@@ -1103,13 +1121,14 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     { id: "ask", group: "comments", keys: ["a"], enabled: () => !saving, run: () => commentHere(true) },
     { id: "explain", group: "comments", keys: ["A"], enabled: () => !saving, run: () => void explainHere() },
     { id: "agentThread", group: "comments", keys: ["g A"], run: () => { loadThreads(); setThreadPicker(true); } },
-    { id: "mapToggle", group: "jump", keys: ["M"], enabled: () => mapAllowed, run: () => {
+    { id: "mapToggle", group: "jump", keys: ["M"], run: () => {
+      if (!mapAllowed) return void openBranch(true);
       if (!chapters.length) return void toast.message(t("noMap"), { id: "workspace" });
       openChapter(shownChapter === null ? 0 : null);
     } },
     { id: "chapterNext", group: "jump", keys: [">"], enabled: () => chapters.length > 0, run: () => stepChapter(1) },
     { id: "chapterPrevious", group: "jump", keys: ["<"], enabled: () => chapters.length > 0, run: () => stepChapter(-1) },
-    { id: "requestMap", group: "review", keys: ["g M"], enabled: () => mapAllowed && !saving, run: () => void requestMap() },
+    { id: "requestMap", group: "review", keys: ["g M"], enabled: () => !saving, run: () => void requestMap() },
     { id: "reply", group: "comments", keys: ["r"], enabled: () => Boolean(nearby()), run: replyNearby },
     { id: "resolve", group: "comments", keys: ["x"], enabled: () => { const comment = nearby(); return Boolean(comment) && !saving && !(comment!.github && !comment!.github.canResolve); },
       run: () => { const comment = nearby()!; void change(() => api.resolveComment.mutate({ id: review.id, commentId: comment.id, resolved: !comment.resolved })); } },

@@ -62,6 +62,9 @@ export function App() {
   // Bumped to remount the branch view on a branch (a checkout without a PR).
   const [branchFocus, setBranchFocus] = useState<{ branch: string; n: number }>();
   const [busy, setBusy] = useState(false);
+  // The review whose map shows as soon as it opens (M on a single commit).
+  const [showMap, setShowMap] = useState<string>();
+  useEffect(() => { if (showMap && review?.id !== showMap) setShowMap(undefined); }, [review?.id]);
   const [saving, setSaving] = useState(false);
   const [path, setPath] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -157,6 +160,7 @@ export function App() {
       const next = commit ? await api.openCommit.mutate({ ...scope(), branch, commit }) : await api.openBranch.mutate({ ...scope(), branch });
       if (request !== sequence.current) return;
       setReview(next); setView("review");
+      return next;
     } catch (error) { if (request === sequence.current) report(error); }
     finally { if (request === sequence.current) setBusy(false); }
   }
@@ -345,6 +349,13 @@ export function App() {
             saving={saving || busy}
             theme={theme}
             path={path}
+            openBranch={async (map) => {
+              if (review.source.kind !== "local") return;
+              const next = await openCommit(review.source.branch);
+              if (next && map) setShowMap(next.id);
+              return next;
+            }}
+            showMap={showMap === review.id}
           />
         </ErrorBoundary>
       ) : (
