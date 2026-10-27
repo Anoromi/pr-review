@@ -92,6 +92,19 @@ export function createRouter(store: ReviewStore) {
         await sendToThread(input.threadId, askMessage(current, comment, hunks));
         return store.update(input.id, (review) => { review.comments.push(comment); });
       }),
+    // Sends the user's latest reply on an asked comment to its agent thread as
+    // a follow-up. Called after the reply is saved; the agent's own replies
+    // come through `reply` and are never sent back.
+    followUp: procedure.input(idInput.extend({ commentId: z.string().min(1) }))
+      .mutation(async ({ input }) => {
+        const current = await store.read(input.id);
+        const comment = current.comments.find((comment) => comment.id === input.commentId);
+        if (!comment?.thread) throw new Error("This comment was not asked of an agent thread.");
+        // The user's latest reply (ReplyComposer posts as "You"), even if the agent answered since.
+        const last = (comment.replies ?? []).findLastIndex((reply) => reply.author === "You");
+        if (last < 0) throw new Error("This comment has no follow-up to send.");
+        await sendToThread(comment.thread.id, askMessage(current, { ...comment, replies: comment.replies!.slice(0, last + 1) }, ""));
+      }),
     // The review map an agent wrote to map.json (see shared/map.ts), or null.
     map: procedure.input(idInput).query(async ({ input }) => {
       const file = join(store.prDirectory(await store.read(input.id)), "map.json");
@@ -288,13 +301,25 @@ export function createRouter(store: ReviewStore) {
 }
 
 const fence = (text: string) => "~~~~\n" + text + "\n~~~~";
-function askMessage(review: Review, comment: Comment, hunks: string) {
+/** The question in `comment`; with replies, the last one is a follow-up to it and the rest the conversation so far. */
+export function askMessage(review: Review, comment: Comment, hunks: string) {
   const lines = hunks.split("\n");
   const side = comment.side === "deletions" ? "old" : "new";
+  const replies = comment.replies ?? [];
+  const followUp = replies.at(-1);
   return [
-    `Question from pr-review about ${comment.file}, ${side} lines ${comment.start}-${comment.end}, in the review "${review.title}":`,
+    `${followUp ? "Follow-up question" : "Question"} from pr-review about ${comment.file}, ${side} lines ${comment.start}-${comment.end}, in the review "${review.title}":`,
     "",
-    comment.body,
+    ...(followUp
+      ? [
+        "The original question:",
+        fence(comment.body),
+        ...(replies.length > 1 ? ["", "The conversation since:", ...replies.slice(0, -1).map((reply) => `${reply.author}:\n${fence(reply.body)}`)] : []),
+        "",
+        "The follow-up to answer:",
+        followUp.body,
+      ]
+      : [comment.body]),
     "",
     "The lines:",
     fence(comment.code),

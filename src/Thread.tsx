@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { HotkeyButton } from "./components/ui/hotkey-button";
 import { Keys } from "./components/ui/key-hint";
+import { toast } from "sonner";
 import { api } from "./api";
 import type { Comment, Review } from "../shared/types";
 
@@ -168,6 +169,10 @@ export function ReplyComposer({ comment, review, change, requested = false, onOp
         localStorage.removeItem(`${key}:submission`); requestId.current = crypto.randomUUID();
         update("");
         close();
+        // On a question to an agent thread, the reply is a follow-up for it too.
+        if (comment.thread && !comment.github)
+          await api.followUp.mutate({ id: review.id, commentId: comment.id })
+            .catch((error) => toast.error(error instanceof Error ? error.message : t("error"), { id: "app-error" }));
       }
     } finally { pending.current = false; setSending(false); }
   }
