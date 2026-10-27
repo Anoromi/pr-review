@@ -19,6 +19,8 @@ export type ShellThread = {
   latestRunRequestedAt?: string | null;
   latestRunStartedAt?: string | null;
   latestRunCompletedAt?: string | null;
+  /** Set while a run is going. */
+  activeRunId?: string | null;
 };
 export type Shell = { threads: ShellThread[]; projects: Array<{ id: string; workspaceRoot: string }> };
 export type AgentThread = { id: string; title: string; updatedAt: string };
@@ -105,10 +107,25 @@ function failure(cause: unknown): string {
   return /"message":"((?:[^"\\]|\\.)*)"/.exec(text)?.[1] ?? text.slice(0, 500);
 }
 
-export async function listThreads(directory: string): Promise<AgentThread[]> {
+export async function readShell(): Promise<Shell> {
   const value = await call<{ kind: string; snapshot: Shell }>("orchestration.subscribeShell", {});
   if (value?.kind !== "snapshot") throw new Error("T3 Code sent no thread list.");
-  return matchThreads(value.snapshot, [directory, await realpath(directory)]);
+  return value.snapshot;
+}
+
+export async function listThreads(directory: string): Promise<AgentThread[]> {
+  return matchThreads(await readShell(), [directory, await realpath(directory)]);
+}
+
+/**
+ * Where a thread is with a message sent to it at `since`: not picked up yet,
+ * running (a busy thread was steered, or queued it), or done. A thread that
+ * no longer exists counts as done: nothing will answer.
+ */
+export function runState(thread: ShellThread | undefined, since: string): "requested" | "working" | "finished" {
+  if (thread?.activeRunId) return "working";
+  if (!thread || Date.parse(thread.latestRunCompletedAt ?? "") > Date.parse(since)) return "finished";
+  return "requested";
 }
 
 /** Sends `text` as a user message: an idle thread starts a turn, a busy one is steered or queues it. */

@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { Check, MessageSquare } from "lucide-react";
 import type { FileDiffMetadata } from "@pierre/diffs";
@@ -23,7 +23,7 @@ function split(name: string) {
   return [name.slice(0, slash), name.slice(slash)];
 }
 
-export const FileSidebar = memo(function FileSidebar({ files, active, viewed, filtered, stats, comments, onPick }: {
+export const FileSidebar = memo(function FileSidebar({ files, active, viewed, filtered, stats, comments, unread, onPick }: {
   files: FileDiffMetadata[];
   active: string;
   viewed: string[];
@@ -31,6 +31,8 @@ export const FileSidebar = memo(function FileSidebar({ files, active, viewed, fi
   filtered?: Set<string>;
   stats: Map<string, Stats>;
   comments: Map<string, number>;
+  /** Unread agent replies per file. */
+  unread: Map<string, number>;
   onPick: (file: string) => void;
 }) {
   const t = useTranslations("app");
@@ -54,6 +56,7 @@ export const FileSidebar = memo(function FileSidebar({ files, active, viewed, fi
           const [directory, basename] = split(file.name);
           const previous = index > 0 ? split(files[index - 1].name)[0] : null;
           const count = comments.get(file.name) ?? 0;
+          const fresh = unread.get(file.name) ?? 0;
           const fileStats = stats.get(file.name);
           const current = active === file.name;
           return (
@@ -74,6 +77,11 @@ export const FileSidebar = memo(function FileSidebar({ files, active, viewed, fi
                   {seen.has(file.name) && <Check className="size-3 text-added" aria-label={t("viewed")} />}
                 </span>
                 <span className={`min-w-0 flex-1 truncate ${filtered?.has(file.name) ? "text-muted-foreground" : ""}`}>{basename}</span>
+                {fresh > 0 && (
+                  <span className="flex shrink-0 items-center gap-1 font-semibold" title={t("newReplies", { count: fresh })}>
+                    <span className="size-1.5 rounded-full bg-primary" />{fresh}
+                  </span>
+                )}
                 {count > 0 && (
                   <span className="flex shrink-0 items-center gap-0.5 text-muted-foreground" title={t("commentCount", { count })}>
                     <MessageSquare className="size-3" />{count}
@@ -158,7 +166,7 @@ export function ThreadPicker({ open, onOpenChange, threads, current, error, onPi
   );
 }
 
-export function StatusLine({ mode, fallbackFile, fileIndex, fileCount, selection, search, draft, viewed, total, saving, path, agent }: {
+export function StatusLine({ mode, fallbackFile, fileIndex, fileCount, selection, search, draft, viewed, total, saving, path, agent, children }: {
   mode: "normal" | "visual" | "visualLine";
   fallbackFile: string;
   fileIndex: number;
@@ -172,6 +180,8 @@ export function StatusLine({ mode, fallbackFile, fileIndex, fileCount, selection
   path: string;
   /** The agent thread questions go to. */
   agent?: string;
+  /** What the agent threads are doing: the map request, new replies. */
+  children?: ReactNode;
 }) {
   const t = useTranslations("app");
   const position = useStore(cursorPosition);
@@ -193,6 +203,7 @@ export function StatusLine({ mode, fallbackFile, fileIndex, fileCount, selection
       )}
       {draft && <span className="flex shrink-0 items-center gap-1.5">{t("draft")}<Keys value="c" /></span>}
       <span className="ml-auto shrink-0 font-semibold" aria-live="polite">{pending}</span>
+      {children}
       {agent && <span className="flex min-w-0 max-w-[30ch] items-center gap-1.5 text-muted-foreground" title={agent}><span className="truncate">{t("agentTarget", { title: agent })}</span><Keys value="g A" /></span>}
       <span className="shrink-0 text-muted-foreground">{t("progress", { viewed, total: fileCount })}</span>
       <span className="flex shrink-0 gap-1.5">

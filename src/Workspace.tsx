@@ -42,6 +42,7 @@ import { filteredFiles, type FileFilter } from "../shared/filters";
 import { fileStats, parseFiles, selectedCode } from "../shared/diff";
 import { chapterPatch, resolveMap, type ReviewMap } from "../shared/map";
 import { ChapterHeader, MapSidebar, skippable } from "./ReviewMap";
+import { awaitingReply } from "../shared/progress";
 import { Markdown } from "./Markdown";
 import type { Comment, Review } from "../shared/types";
 
@@ -112,8 +113,9 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
   const chapters = useMemo(() => reviewMap ? resolveMap(reviewMap, allFiles) : [], [reviewMap, allFiles]);
   // The chapter shown, or null for the whole diff.
   const [chapter, setChapter] = useState<number | null>(null);
-  useEffect(() => {
-    if (!showMap) return;
+  // Shows the map from its first chapter, read fresh: it may have just been written.
+  function openMap() {
+    if (!mapAllowed) return void openBranch(true);
     api.map.query({ id: review.id })
       .then((next) => {
         if (!next) return void toast.message(t("noMap"), { id: "workspace" });
@@ -121,8 +123,44 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
         setChapter(0);
       })
       .catch((error) => toast.error(error instanceof Error ? error.message : t("error"), { id: "workspace" }));
-  }, [showMap, review.id]);
+  }
+  useEffect(() => { if (showMap) openMap(); }, [showMap, review.id]);
+  // What the agent threads are doing with the last map request and the
+  // questions still owed a reply (see the `progress` query), while the tab is visible.
+  const [progress, setProgress] = useState<Awaited<ReturnType<typeof api.progress.query>> | null>(null);
+  function refreshProgress() {
+    return api.progress.query({ id: review.id }).then((next) => { setProgress(next); toast.dismiss("progress"); })
+      .catch((error) => toast.error(error instanceof Error ? error.message : t("error"), { id: "progress" }));
+  }
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      if (document.visibilityState === "visible") await refreshProgress();
+      if (!stopped) timer = setTimeout(poll, 3000);
+    }
+    void poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [review.id]);
+  // The map status stays in the status line until the map is opened or the
+  // failure dismissed; which request that was is remembered per review.
+  const mapSeenKey = `pr-review:map-seen:${review.source.url}`;
+  const [mapSeen, setMapSeen] = useState(() => { try { return localStorage.getItem(mapSeenKey); } catch { return null; } });
+  const mapJob = progress?.map && progress.map.requestedAt !== mapSeen ? progress.map : null;
+  function dismissMapJob() {
+    if (!progress?.map) return;
+    setMapSeen(progress.map.requestedAt);
+    try { localStorage.setItem(mapSeenKey, progress.map.requestedAt); } catch {}
+  }
+  const mapState = useRef<string>(undefined);
+  useEffect(() => {
+    const state = progress?.map?.state;
+    if (state === "ready" && mapState.current && mapState.current !== "ready" && mapJob)
+      toast.success(t("mapReady"), { id: "map-ready", action: { label: t("openMap"), onClick: openMap } });
+    mapState.current = state;
+  }, [progress?.map?.state]);
   const shownChapter = chapter !== null && chapter < chapters.length ? chapter : null;
+  useEffect(() => { if (shownChapter !== null && progress?.map?.state === "ready") dismissMapJob(); }, [shownChapter !== null, progress?.map?.state]);
   // Files of which the chapter shows only some hunks: their unchanged context
   // must not load, or expanding it would show the other hunks' lines as
   // unchanged.
@@ -964,6 +1002,17 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
     const target = delta > 0 ? after[0] ?? threads[0] : before.at(-1) ?? threads.at(-1)!;
     jumpTo({ id: target.file, line: target.end, side: target.side, column: 0 });
   }
+  // The next comment with an unread agent reply after the cursor, wrapping around.
+  function goToUnread() {
+    const order = (comment: Comment) => files.findIndex((file) => file.name === comment.file);
+    const targets = [...new Map(unread.map(({ comment }) => [comment.id, comment])).values()]
+      .sort((a, b) => order(a) - order(b) || a.end - b.end);
+    if (!targets.length) return void toast.message(t("noNewReplies"), { id: "workspace" });
+    const fileIndex = files.findIndex((file) => file.name === currentFile());
+    const line = cursor.current?.line ?? 0;
+    const target = targets.find((comment) => order(comment) > fileIndex || (order(comment) === fileIndex && comment.end > line)) ?? targets[0];
+    jumpTo({ id: target.file, line: target.end, side: target.side, column: 0 });
+  }
   function clearSearch() {
     searchTerm.current = "";
     searchMatches.current = [];
@@ -1011,6 +1060,7 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
       endVisual();
       setSelection(null);
       toast.success(t("askedThread", { title: target.title }), { id: "workspace" });
+      void refreshProgress();
     }
   }
   function setViewed(file: string, viewed: boolean) {
@@ -1050,6 +1100,45 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
   }
 
   const nearby = () => nearbyThread(cursor.current);
+  // Agent replies (anyone but "You" on a local comment) the reader has not
+  // seen, kept per review in localStorage. The first visit counts what is
+  // already there as seen; the cursor on a comment marks it seen.
+  const readKey = `pr-review:read:${review.source.url}`;
+  const agentReplies = useMemo(() => review.comments.filter((comment) => !comment.github && shownInline(comment)).flatMap((comment) =>
+    (comment.replies ?? []).filter((reply) => reply.author !== "You").map((reply) => ({ comment, reply }))), [review.comments]);
+  const [read, setRead] = useState(() => {
+    try {
+      const saved = localStorage.getItem(readKey);
+      if (saved) return new Set<string>(JSON.parse(saved));
+      const seen = agentReplies.map(({ reply }) => reply.id);
+      localStorage.setItem(readKey, JSON.stringify(seen));
+      return new Set(seen);
+    } catch {
+      return new Set(agentReplies.map(({ reply }) => reply.id));
+    }
+  });
+  const unread = agentReplies.filter(({ reply }) => !read.has(reply.id));
+  function markRead(commentId: string) {
+    const ids = unread.filter(({ comment }) => comment.id === commentId).map(({ reply }) => reply.id);
+    if (!ids.length) return;
+    const next = new Set([...read, ...ids]);
+    setRead(next);
+    try { localStorage.setItem(readKey, JSON.stringify([...next])); } catch {}
+  }
+  useEffect(() => { if (nearbyReply) markRead(nearbyReply); }, [nearbyReply, agentReplies]);
+  // A quiet toast for each reply that arrives while the review is open.
+  const knownReplies = useRef(new Set(agentReplies.map(({ reply }) => reply.id)));
+  useEffect(() => {
+    for (const { comment, reply } of agentReplies) {
+      if (knownReplies.current.has(reply.id)) continue;
+      knownReplies.current.add(reply.id);
+      if (comment.id === nearbyReply) continue;
+      toast.message(t("agentReplied", { author: reply.author, file: comment.file }), {
+        id: `reply-${reply.id}`,
+        action: { label: t("showReply"), onClick: () => jumpTo({ id: comment.file, line: comment.end, side: comment.side, column: 0 }) },
+      });
+    }
+  }, [agentReplies]);
   function openChapter(index: number | null) {
     endVisual();
     setSelection(null);
@@ -1075,6 +1164,7 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
       if (!id) return;
       await api.requestMap.mutate({ id, threadId: target.id });
       toast.success(t("mapRequested", { title: target.title }), { id: "workspace" });
+      if (id === review.id) void refreshProgress();
     } catch (error) { toast.error(error instanceof Error ? error.message : t("error"), { id: "workspace" }); }
   }
   const commands: Command[] = [
@@ -1106,6 +1196,7 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
     { id: "hunkPrevious", group: "jump", keys: ["{"], run: () => goToHunk(-1) },
     { id: "commentNext", group: "jump", keys: [")"], run: () => goToComment(1) },
     { id: "commentPrevious", group: "jump", keys: ["("], run: () => goToComment(-1) },
+    { id: "unreadNext", group: "jump", keys: ["i"], run: goToUnread },
     { id: "search", group: "jump", keys: ["/"], run: () => { setSearchInput(""); setSearchOpen(true); } },
     { id: "searchNext", group: "jump", keys: [";"], enabled: () => searchMatches.current.length > 0, run: () => jumpMatch(matchIndex + 1) },
     { id: "searchPrevious", group: "jump", keys: [","], enabled: () => searchMatches.current.length > 0, run: () => jumpMatch(matchIndex - 1) },
@@ -1173,8 +1264,14 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
     return counts;
   }, [review.comments]);
 
+  const unreadByFile = new Map<string, number>();
+  for (const { comment } of unread) unreadByFile.set(comment.file, (unreadByFile.get(comment.file) ?? 0) + 1);
+
   function renderComment(comment: Comment) {
     const near = nearbyReply === comment.id;
+    const fresh = unread.filter((item) => item.comment.id === comment.id).length;
+    // The server's view of the run, while this client also sees no answer yet.
+    const waiting = progress?.replies[comment.id] && awaitingReply(comment) ? progress.replies[comment.id] : undefined;
     return (
       <article className="comment" key={comment.id} data-nearby={near}>
         <header className="flex min-h-6 items-center gap-2 text-xs text-muted-foreground">
@@ -1185,6 +1282,7 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
               ? <span className="truncate" title={comment.thread.title}>{t("askedThread", { title: comment.thread.title })}</span>
               : <span>{t(comment.destination === "github" ? "queuedGitHub" : "localOnly")}</span>}
           {comment.resolved && <span>· {t("resolvedComment")}</span>}
+          {fresh > 0 && <span className="flex shrink-0 items-center gap-1 text-foreground" title={t("newReplies", { count: fresh })}><span className="size-1.5 rounded-full bg-primary" />{t("unread")}</span>}
           <span className="ml-auto flex gap-1">
             <HotkeyButton size="xs" hotkey="e" showHotkey={near} disabled={saving || Boolean(comment.github && !comment.github.canEdit)} onClick={() => edit(comment)}>
               {t("edit")}
@@ -1201,6 +1299,7 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
             <Markdown className="comment-body" text={reply.body} />
           </div>
         ))}
+        {waiting && <p className={`mt-2 text-xs ${waiting === "finished" ? "text-destructive" : "text-muted-foreground"}`} role="status">{t(`replyStatus.${waiting}`)}</p>}
         <div className="mt-2">
           <ReplyComposer comment={comment} review={review} change={change} showHotkey={near} requested={replyTarget === comment.id} onOpened={() => setReplyTarget(null)} onLeave={() => scroll.current?.focus()} />
         </div>
@@ -1240,6 +1339,7 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
             filtered={filtered}
             stats={statsByFile}
             comments={commentCounts}
+            unread={unreadByFile}
             onPick={openFile}
           />
         )}
@@ -1427,7 +1527,23 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
         saving={saving}
         path={path}
         agent={thread?.title}
-      />
+      >
+        {progress?.error && (
+          <span className="min-w-0 max-w-[40ch] truncate text-destructive" title={progress.error}>{t("agentStatusError", { error: progress.error })}</span>
+        )}
+        {mapJob && (
+          mapJob.state === "ready"
+            ? <button className="flex shrink-0 items-center gap-1.5 font-semibold" onClick={openMap}>{t("mapStatus.ready")}<Keys value="M" /></button>
+            : mapJob.state === "finished"
+              ? <button className="min-w-0 max-w-[40ch] truncate text-destructive" title={t("dismiss")} onClick={dismissMapJob}>{t("mapStatus.finished", { title: mapJob.title })}</button>
+              : <span className="min-w-0 max-w-[40ch] truncate text-muted-foreground" title={mapJob.title} role="status">{t(`mapStatus.${mapJob.state}`, { title: mapJob.title })}</span>
+        )}
+        {unread.length > 0 && (
+          <button className="flex shrink-0 items-center gap-1.5 font-semibold" onClick={goToUnread}>
+            <span className="size-1.5 rounded-full bg-primary" />{t("newReplies", { count: unread.length })}<Keys value="i" />
+          </button>
+        )}
+      </StatusLine>
       <ThreadPicker open={threadPicker} onOpenChange={setThreadPicker} threads={threads} current={thread?.id} error={threadsError} onPick={setThreadId} />
       <FilePicker
         open={picker}
