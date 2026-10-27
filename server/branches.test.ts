@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { listBranches, loadBranchCommit, loadBranchReview, loadCommit, ownCommits } from "./branches";
+import { branchHead, listBranches, loadBranchCommit, loadBranchReview, loadCommit, ownCommits } from "./branches";
+import { mapOutdated } from "./home";
 import { ReviewStore } from "./store";
 const exec = promisify(execFile);
 
@@ -110,5 +111,34 @@ test("a review's own commits stop at its base and skip merges; commit snapshots 
     assert.equal(store.prDirectory(pullCommit), store.prDirectory(pull));
     assert.equal(pullCommit.source.kind === "local" && pullCommit.source.commit, two);
     await assert.rejects(loadCommit(branch, "0".repeat(40), store));
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
+test("a rewritten branch shows its new head, and a map written for the old diff is flagged with the head it was asked for", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "branch-moved-"));
+  const git = async (...args: string[]) => (await exec("git", ["-C", repo, ...args])).stdout.trim();
+  try {
+    await git("init", "-b", "main");
+    await git("config", "user.name", "Reviewer"); await git("config", "user.email", "reviewer@example.com");
+    await writeFile(join(repo, "a.txt"), "base\n"); await git("add", "."); await git("commit", "-m", "base");
+    await git("checkout", "-b", "feature");
+    await writeFile(join(repo, "a.txt"), "one\n"); await git("commit", "-am", "one");
+    const store = new ReviewStore(join(repo, "reviews"));
+    const old = await store.save(await loadBranchReview("feature", store, repo));
+    assert.equal(await branchHead(old), old.revision);
+    const directory = store.prDirectory(old);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "map-diff.patch"), old.patch);
+    await writeFile(join(directory, "map-request.json"), JSON.stringify({ threadId: "t", title: "T", requestedAt: new Date().toISOString(), revision: old.revision }));
+    assert.equal(await mapOutdated(store, old), null);
+    await git("commit", "--amend", "-m", "one, rewritten");
+    await writeFile(join(repo, "b.txt"), "two\n"); await git("add", "."); await git("commit", "-m", "two");
+    const head = await git("rev-parse", "HEAD");
+    assert.equal(await branchHead(old), head);
+    const fresh = await store.save(await loadBranchReview("feature", store, repo));
+    assert.equal(fresh.revision, head);
+    assert.equal((await ownCommits(fresh)).length, 2);
+    assert.deepEqual(await mapOutdated(store, fresh), { revision: old.revision });
+    assert.equal(await branchHead({ ...fresh, source: { ...fresh.source, branch: "gone" } as typeof fresh.source }), null);
   } finally { await rm(repo, { recursive: true, force: true }); }
 });

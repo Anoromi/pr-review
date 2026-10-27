@@ -73,6 +73,8 @@ type Props = {
   path: string;
   /** The commit to open scoped to. */
   initialCommit?: string;
+  /** Reopens the branch or PR at where it points now. */
+  onReload: () => void;
   stack: { position: number; total: number } | null;
   onStack: () => void;
   /** Top bar buttons: GitHub review, commands, keys. */
@@ -106,7 +108,7 @@ const basename = (file: string) => file.slice(file.lastIndexOf("/") + 1);
 const lineRange = (comment: Pick<Comment, "start" | "end">) => comment.start === comment.end ? `${comment.start}` : `${comment.start}–${comment.end}`;
 const lastActivity = (comment: Comment) => [comment.createdAt, ...(comment.replies ?? []).map((reply) => reply.createdAt)].sort().at(-1)!;
 
-export function Workspace({ review, change, saving, theme, path, initialCommit, stack, onStack, buttons }: Props) {
+export function Workspace({ review, change, saving, theme, path, initialCommit, onReload, stack, onStack, buttons }: Props) {
   const t = useTranslations("app");
   const format = useFormatter();
   const branchFiles = useMemo(() => reviewFiles(review), [review.id, review.patch]);
@@ -131,6 +133,9 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
 
   // The review map (map.json, written by an agent): chapters of hunks in reading order.
   const [reviewMap, setReviewMap] = useState<ReviewMap | null>(null);
+  // Set when the map was written for another diff (an older head): it still
+  // shows, and what it names that this diff lacks is listed in its chapters.
+  const [mapOutdated, setMapOutdated] = useState<{ revision: string | null } | null>(null);
   const [mapError, setMapError] = useState("");
   const [mapLoaded, setMapLoaded] = useState(false);
   useEffect(() => {
@@ -141,7 +146,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
       try {
         const next = await api.map.query({ id: review.id });
         const text = JSON.stringify(next);
-        if (!stopped && text !== last) { last = text; setReviewMap(next); }
+        if (!stopped && text !== last) { last = text; setReviewMap(next.map); setMapOutdated(next.outdated); }
         if (!stopped) { setMapError(""); setMapLoaded(true); }
       } catch (error) {
         if (!stopped) { setMapError(error instanceof Error ? error.message : t("error")); setMapLoaded(true); }
@@ -1222,7 +1227,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   }
   const location = (comment: Comment) => {
     const chapter = chapterOf(comment);
-    return `${basename(comment.file)} ${lineRange(comment)}${comment.side === "deletions" ? ` ${t("old")}` : ""}${chapter !== null ? ` · ${t("chapterShort", { index: chapter + 1 })}` : ""}`;
+    return `${basename(comment.file)} ${lineRange(comment)}${comment.side === "deletions" ? ` ${t("old")}` : ""}${chapter !== null ? ` · ${t("chapterShort", { index: chapter + 1 })}` : ""}${shownInline(comment) ? "" : ` · ${t("earlierSnapshot")}`}`;
   };
   const inbox = useMemo(() => {
     const ordered = [...review.comments].sort((a, b) => lastActivity(b).localeCompare(lastActivity(a)));
@@ -1604,6 +1609,10 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     if (mapError) return (
       <div className="rail-card" role="alert"><h4><Dot tone="warn" />{t("mapCard.invalid")}</h4><pre className="max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{mapError}</pre></div>
     );
+    const outdatedCard = reviewMap && mapOutdated && (
+      <div className="rail-card" role="alert"><h4><Dot tone="warn" />{mapOutdated.revision ? t("mapCard.outdatedFor", { hash: mapOutdated.revision.slice(0, 7) }) : t("mapCard.outdated")}</h4>
+        <p>{t("mapCard.outdatedWhy")}</p><p className="mt-1 flex items-center gap-1.5"><Keys value="g M" />{t("mapCard.update")}</p></div>
+    );
     if (mapJob && mapPending) {
       const steps = [
         { done: true, text: t("mapCard.sent", { files: branchFiles.length }) },
@@ -1619,6 +1628,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
         </div>
       );
     }
+    if (outdatedCard) return outdatedCard;
     if (mapJob?.state === "finished" && mapSeen !== mapJob.requestedAt) return (
       <div className="rail-card"><h4><Dot tone="warn" />{t("mapCard.finished", { title: mapJob.title })}</h4><p className="flex items-center gap-1.5"><Keys value="g M" />{t("mapCard.again")}<button className="ml-auto underline" onClick={dismissMapJob}>{t("dismiss")}</button></p></div>
     );
@@ -1662,6 +1672,12 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
           <span className="truncate">{chapters.length ? t("chaptersRead", { read: chaptersRead, total: chapters.length }) : t("filesRead", { read: branchFilesRead, total: branchFiles.length })} · {t("openQuestions", { count: openQuestions })}</span>
         </div>
         <span className="ml-auto" />
+        {progress?.head && progress.head !== review.revision && (
+          <button className="pill" data-tone="warn" role="status" onClick={onReload}><Dot tone="warn" />{t("branchMoved", { hash: progress.head.slice(0, 7) })}<Keys value="g r" /></button>
+        )}
+        {reviewMap && mapOutdated && (
+          <button className="pill" data-tone="warn" title={t("mapCard.outdatedWhy")} onClick={() => openRail("map")}><Dot tone="warn" />{mapOutdated.revision ? t("mapCard.outdatedFor", { hash: mapOutdated.revision.slice(0, 7) }) : t("mapCard.outdated")}<Keys value="g M" /></button>
+        )}
         <AgentPill status={status} fallback={t(thread ? "agent.idle" : "agent.noThread")} hint={status.parts[0]?.key === "newReplies" ? "i" : status.parts[0]?.key === "mapReady" || status.parts[0]?.key === "writingMap" ? "M" : "I"}
           onClick={() => { setPanelOpen(true); requestAnimationFrame(() => setFocus("panel")); }} />
         {buttons}

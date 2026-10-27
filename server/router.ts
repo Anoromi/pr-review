@@ -1,5 +1,5 @@
 import { ReviewSync } from "./review-sync";
-import { branchRows, commitPatch, listBranches, loadBranchReview, loadCommit, ownCommits } from "./branches";
+import { branchHead, branchRows, commitPatch, listBranches, loadBranchReview, loadCommit, ownCommits } from "./branches";
 import { loadLocalReview, withGeneratedFiles } from "./local";
 import { hydratePartialDiff } from "@pierre/diffs";
 import { loadContext, readContext } from "./context";
@@ -15,7 +15,7 @@ import { markdown } from "./markdown";
 import { listThreads, readShell, sendToThread } from "./t3";
 import { resolveMap } from "../shared/map";
 import { commitChapters } from "../shared/read";
-import { agentCheckouts, agentProgress, latestSnapshots, readingProgress, readMap } from "./home";
+import { agentCheckouts, agentProgress, latestSnapshots, mapOutdated, readingProgress, readMap } from "./home";
 import { fileAt, grep } from "./code";
 import { writeFile, mkdir } from "node:fs/promises";
 import { apiUrl } from "./port";
@@ -108,8 +108,12 @@ export function createRouter(store: ReviewStore) {
         if (last < 0) throw new Error("This comment has no follow-up to send.");
         await sendToThread(comment.thread.id, followUpMessage(current, comment, comment.replies![last].body, store.prDirectory(current)));
       }),
-    // The review map an agent wrote to map.json (see shared/map.ts), or null.
-    map: procedure.input(idInput).query(async ({ input }) => readMap(store, await store.read(input.id))),
+    // The review map an agent wrote to map.json (see shared/map.ts), or null,
+    // and whether it was written for another diff (see mapOutdated).
+    map: procedure.input(idInput).query(async ({ input }) => {
+      const review = await store.read(input.id);
+      return { map: await readMap(store, review), outdated: await mapOutdated(store, review) };
+    }),
     // Asks the agent thread to write map.json for this review's diff.
     // The request is kept in map-request.json, so `progress` can follow it.
     requestMap: procedure.input(idInput.extend({ threadId: z.string().min(1) })).mutation(async ({ input }) => {
@@ -126,10 +130,14 @@ export function createRouter(store: ReviewStore) {
         "Add a note (`notes`: file, side, start, end, why) on each non-obvious line or small range: the reason it was written this way (the motivation, the alternative rejected, the constraint), not a restatement of the diff. Skip trivial lines; do not annotate every line. pr-review shows each note under its lines and lists notes on lines the diff does not show.",
         `Write the map to ${join(directory, "map.json")}. pr-review shows it as soon as the file is valid; an invalid file shows its errors there.`,
       ].join("\n"));
-      await writeFile(join(directory, "map-request.json"), JSON.stringify({ threadId: input.threadId, title, requestedAt }) + "\n", { mode: 0o600 });
+      await writeFile(join(directory, "map-request.json"), JSON.stringify({ threadId: input.threadId, title, requestedAt, revision: review.revision }) + "\n", { mode: 0o600 });
     }),
-    // What the agent threads are doing with the map request and questions (see agentProgress).
-    progress: procedure.input(idInput).query(async ({ input }) => agentProgress(store, await store.read(input.id), readShell)),
+    // What the agent threads are doing with the map request and questions
+    // (see agentProgress), and where the review's branch points now.
+    progress: procedure.input(idInput).query(async ({ input }) => {
+      const review = await store.read(input.id);
+      return { ...(await agentProgress(store, review, readShell)), head: await branchHead(review) };
+    }),
     branches: procedure.input(scoped.optional()).query(({ input }) => listBranches(checkoutRepo(input?.checkout))),
     // The review's own commits, oldest first, each hunk with its id (for read
     // ticks) and the map chapter it belongs to (see commitChapters).

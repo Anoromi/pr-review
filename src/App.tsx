@@ -161,12 +161,15 @@ export function App() {
   async function switchReview(id: string) {
     try {
       const saved = await api.get.query({ id });
-      // A single commit's review opens as its branch or PR, scoped to the commit.
-      const commit = commitOf(saved);
-      if (commit && saved.source.kind === "local")
-        return saved.source.branchReview
-          ? openBranch(saved.source.branch, saved.source.repo, commit)
-          : load(() => api.open.mutate({ checkout: saved.source.kind === "local" ? saved.source.repo : undefined, url: saved.source.url }), commit);
+      // A local branch or PR opens at where it points now: the URL names the
+      // snapshot it was at when last open. A single commit's review opens as
+      // its branch or PR, scoped to the commit. A branch that is gone shows
+      // the saved snapshot, with the error.
+      if (saved.source.kind === "local") {
+        const { branch, repo, url, branchReview } = saved.source;
+        const reopen = () => branchReview ? api.openBranch.mutate({ checkout: repo, branch }) : api.open.mutate({ checkout: repo, url });
+        return load(() => reopen().catch((error) => { report(error); return saved; }), commitOf(saved) ?? initialCommit);
+      }
       await load(async () => saved, initialCommit);
     } catch (error) { report(error); setView("home"); }
   }
@@ -285,6 +288,7 @@ export function App() {
             theme={theme}
             path={path}
             initialCommit={initialCommit}
+            onReload={reload}
             stack={currentStack.length > 1 ? { position: activeIndex - stackStart + 1, total: currentStack.length } : null}
             onStack={() => setStackOpen(true)}
             buttons={<>

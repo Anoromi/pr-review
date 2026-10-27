@@ -23,7 +23,25 @@ export async function readMap(store: ReviewStore, review: Pick<Review, "source">
   }
 }
 
-type Job = { threadId: string; title: string; requestedAt: string };
+type Job = { threadId: string; title: string; requestedAt: string; revision?: string };
+
+/**
+ * Whether map.json was written for another diff than the review's: the diff
+ * last sent to the agent (map-diff.patch) is not the review's patch. Then the
+ * head it was asked for, when the request recorded it. A map written without
+ * a request has no recorded diff and counts as current.
+ */
+export async function mapOutdated(store: ReviewStore, review: Review): Promise<{ revision: string | null } | null> {
+  const directory = store.prDirectory(review);
+  let diff: string;
+  try { diff = await readFile(join(directory, "map-diff.patch"), "utf8"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  if (diff === review.patch) return null;
+  let job: Job | null = null;
+  try { job = JSON.parse(await readFile(join(directory, "map-request.json"), "utf8")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  return { revision: job?.revision ?? null };
+}
 
 /**
  * What the agent threads are doing with what was sent to them: the last map

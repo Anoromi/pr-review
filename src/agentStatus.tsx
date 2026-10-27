@@ -25,7 +25,7 @@ export function seenReplies(url: string): Set<string> | null {
  * The agent's state in a few words, never truncated: what the agent pill and
  * Home's rows show. Parts in order of urgency; the tone is the first part's.
  */
-export function agentStatus(progress: Progress | null | undefined, newReplies: number, now: number, mapReadySeen = true) {
+export function agentStatus(progress: Omit<Progress, "head"> | null | undefined, newReplies: number, now: number, mapReadySeen = true) {
   const parts: Array<{ tone: Tone; key: string; values?: Record<string, string | number> }> = [];
   if (progress?.error) parts.push({ tone: "warn", key: "unreachable" });
   const map = progress?.map;

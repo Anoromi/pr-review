@@ -51,6 +51,13 @@ export async function ownCommits(review: Review) {
   });
 }
 
+/** Where the review's branch points now, or null where no local branch has its name (a PR fetched from GitHub). */
+export async function branchHead(review: Review) {
+  if (review.source.kind !== "local") return null;
+  try { return (await git(review.source.repo, "rev-parse", "--verify", "--quiet", `refs/heads/${review.source.branch}^{commit}`)).trim(); }
+  catch { return null; }
+}
+
 const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 async function firstParent(repo: string, commit: string) {
   return (await git(repo, "rev-list", "--parents", "-n", "1", commit)).trim().split(" ")[1] ?? emptyTree;

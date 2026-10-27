@@ -141,6 +141,7 @@
     "selectionRequired": "Select a line or range first.",
     "revision": "Revision {hash}",
     "newRevision": "New revision loaded.",
+    "branchMoved": "Branch moved to {hash}",
     "openGithub": "Open on GitHub",
     "savedPath": "Markdown file",
     "loading": "Loading saved review…",
@@ -320,7 +321,11 @@
       "ask": "asks {title} to write one",
       "ready": "Map ready",
       "start": "starts chapter 1",
-      "invalid": "The map has errors"
+      "invalid": "The map has errors",
+      "outdated": "Map is for an older version",
+      "outdatedFor": "Map is for {hash}, an older version",
+      "outdatedWhy": "The branch has changed since the map was written. Hunks it names that this diff lacks are listed in their chapters; changes it does not cover are under Uncovered.",
+      "update": "asks the agent thread to update it"
     },
     "chapterChip": "ch {index}",
     "uncoveredChip": "{count} uncovered",
