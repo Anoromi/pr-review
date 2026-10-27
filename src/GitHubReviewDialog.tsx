@@ -7,6 +7,7 @@ import { Button } from "./components/ui/button";
 import { Keys } from "./components/ui/key-hint";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
+import { Markdown } from "./Markdown";
 
 export function GitHubReviewDialog({ open, onOpenChange: setOpen, review, busy, onSynced }: { open: boolean; onOpenChange: (open: boolean) => void; review: Review; busy: boolean; onSynced: (review: Review) => void }) {
   const t = useTranslations("app");
@@ -98,10 +99,10 @@ export function GitHubReviewDialog({ open, onOpenChange: setOpen, review, busy, 
               <option value="REQUEST_CHANGES" disabled={state?.account === state?.author}>{t("reviewRequestChanges")}</option>
             </select></label>
             <p className="text-sm">{t("githubDraftCount", { count: drafts.length })}</p>
-            <ul className="max-h-40 space-y-2 overflow-auto text-sm">{drafts.map(comment => <li key={comment.id}><span className="font-mono">{comment.file}:{comment.start}</span><p className="whitespace-pre-wrap">{comment.body}</p>{preview.find(item => item.id === comment.id)?.error && <p className="text-destructive">{preview.find(item => item.id === comment.id)!.error}</p>}</li>)}</ul>
+            <ul className="max-h-40 space-y-2 overflow-auto text-sm">{drafts.map(comment => <li key={comment.id}><span className="font-mono">{comment.file}:{comment.start}</span><Markdown text={comment.body} />{preview.find(item => item.id === comment.id)?.error && <p className="text-destructive">{preview.find(item => item.id === comment.id)!.error}</p>}</li>)}</ul>
             <Button type="submit" disabled={sending || busy || checking || preview.some(item => item.error) || !state?.account || Boolean(state.error || state.pending) || state.head !== review.revision}>{sending ? t("saving") : t("submitReview")}<Keys value="Ctrl+Enter" /></Button>
           </form>
-          {Boolean(state?.reviews.length) && <div className="mt-4 space-y-3 border-t pt-3"><h3 className="text-sm font-medium">{t("githubReviewActivity")}</h3>{state!.reviews.map(item => <article key={`${item.state}-${item.id}`} className="text-sm"><a className="underline" href={item.url} target="_blank" rel="noreferrer">{item.author} · {item.state}</a><p className="whitespace-pre-wrap">{item.body}</p></article>)}</div>}
+          {Boolean(state?.reviews.length) && <div className="mt-4 space-y-3 border-t pt-3"><h3 className="text-sm font-medium">{t("githubReviewActivity")}</h3>{state!.reviews.map(item => <article key={`${item.state}-${item.id}`} className="text-sm"><a className="underline" href={item.url} target="_blank" rel="noreferrer">{item.author} · {item.state}</a><Markdown text={item.body} /></article>)}</div>}
         </>}
         {(error || state?.error) && <p role="alert" className="mt-3 whitespace-pre-wrap text-sm text-destructive">{error || state?.error}</p>}
       </Dialog.Content>

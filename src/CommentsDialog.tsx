@@ -4,6 +4,7 @@ import { Dialog } from "radix-ui";
 import { useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { Button } from "./components/ui/button";
+import { Markdown } from "./Markdown";
 import type { Comment } from "../shared/types";
 
 export function CommentsDialog({ open, onOpenChange: setOpen, comments, onJump, renderReply }: {
@@ -96,8 +97,8 @@ export function CommentsDialog({ open, onOpenChange: setOpen, comments, onJump, 
                   <pre className="overflow-auto border-b bg-muted/40 px-4 py-3 text-xs"><code>{thread.code}</code></pre>
                   <div className="px-4 py-3">
                     <strong className="text-sm">{t("yourComment")}</strong>
-                    <p className="mt-1 whitespace-pre-wrap leading-relaxed">{thread.body}</p>
-                    {(thread.replies ?? []).map((reply) => <div key={reply.id} className="mt-4 border-l-2 pl-3"><strong className="text-sm">{reply.author}</strong><p className="mt-1 whitespace-pre-wrap leading-relaxed">{reply.body}</p></div>)}
+                    <Markdown className="mt-1 leading-relaxed" text={thread.body} />
+                    {(thread.replies ?? []).map((reply) => <div key={reply.id} className="mt-4 border-l-2 pl-3"><strong className="text-sm">{reply.author}</strong><Markdown className="mt-1 leading-relaxed" text={reply.body} /></div>)}
                   </div>
                   <footer className="border-t px-3 py-2">{renderReply(thread, active)}</footer>
                 </article>;

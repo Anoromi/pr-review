@@ -300,7 +300,7 @@ function askMessage(review: Review, comment: Comment, hunks: string) {
     fence(comment.code),
     ...(hunks ? ["", "The diff around them:", fence(lines.length > 200 ? [...lines.slice(0, 200), `… ${lines.length - 200} more lines, see the file`].join("\n") : hunks)] : []),
     "",
-    "Answer in pr-review so it appears under those lines: POST your reply as JSON (keep it short and specific, plain text, newlines allowed). Do not change code unless asked.",
+    "Answer in pr-review so it appears under those lines: POST your reply as JSON (keep it short and specific). The reply is rendered as Markdown: short paragraphs, lists, `backticks` for identifiers and paths, fenced code blocks. Do not change code unless asked.",
     fence(`curl -sS -X POST ${apiUrl}/trpc/reply -H 'Content-Type: application/json' --data-binary @- <<'JSON'
 ${JSON.stringify({ id: review.id, commentId: comment.id, author: "Agent", body: "YOUR ANSWER" })}
 JSON`),

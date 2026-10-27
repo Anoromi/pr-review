@@ -138,7 +138,7 @@ export class ReviewStore {
 
 Read comments.json for the user's requests. Each request has an id, repository-relative file, side, start/end line numbers, original code, body and snapshotId. pr.json identifies the review and branch when applicable. Read the captured code before applying a request to a newer revision.
 
-Write replies to replies.json, a JSON array. Preserve existing replies. Each reply needs id (a new UUID), commentId (the request id), author, body and createdAt (ISO timestamp). Write to a temporary file in this directory and rename it over replies.json atomically. Do not edit comments.json or review.json to reply. The app reads replies through tRPC every two seconds. Replies are plain text; preserve newlines for code.
+Write replies to replies.json, a JSON array. Preserve existing replies. Each reply needs id (a new UUID), commentId (the request id), author, body and createdAt (ISO timestamp). Write to a temporary file in this directory and rename it over replies.json atomically. Do not edit comments.json or review.json to reply. The app reads replies through tRPC every two seconds. Replies are rendered as Markdown: use short paragraphs, lists, backticks for identifiers and paths, and fenced code blocks.
 
 GitHub synchronization is stored in github.json beside these files. It contains imported threads, replies, review decisions and pending submission recovery data. Treat it as app-owned state; do not edit it directly. Local agent replies stay local unless the user explicitly requests publishing them.
 

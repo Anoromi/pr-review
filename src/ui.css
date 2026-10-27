@@ -221,7 +221,113 @@
     margin-top: 4px;
     line-height: 1.55;
     overflow-wrap: anywhere;
-    white-space: pre-wrap;
+  }
+
+  /* Markdown from users and agents (Markdown.tsx), after T3 Code's chat. */
+  .markdown {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .markdown > :first-child {
+    margin-top: 0;
+  }
+  .markdown > :last-child {
+    margin-bottom: 0;
+  }
+  .markdown :is(p, ul, ol, blockquote, pre, table, .markdown-code) {
+    margin: 0.5em 0;
+  }
+  .markdown :is(h1, h2, h3, h4, h5, h6) {
+    margin: 0.9em 0 0.4em;
+    font-size: 1em;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .markdown h1 {
+    font-size: 1.15em;
+  }
+  .markdown ul {
+    padding-left: 1.25rem;
+    list-style-type: disc;
+  }
+  .markdown ol {
+    padding-left: 1.5rem;
+    list-style-type: decimal;
+  }
+  .markdown ol > li::marker {
+    font-variant-numeric: tabular-nums;
+  }
+  .markdown ul ul {
+    list-style-type: circle;
+  }
+  .markdown li + li {
+    margin-top: 0.2em;
+  }
+  .markdown :is(li > ul, li > ol) {
+    margin: 0.2em 0;
+  }
+  .markdown li.task-list-item {
+    list-style-type: none;
+  }
+  .markdown li.task-list-item input {
+    margin: 0 0.35em 0.15em -1.25rem;
+    vertical-align: middle;
+  }
+  .markdown a {
+    color: var(--ring);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .markdown blockquote {
+    border-left: 2px solid var(--border);
+    padding-left: 0.8em;
+    color: var(--muted-foreground);
+  }
+  .markdown hr {
+    margin: 0.8em 0;
+  }
+  .markdown :not(pre) > code {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-decoration-break: clone;
+    background: var(--secondary);
+    padding: 0.05em 0.3em;
+    font-size: 0.85em;
+  }
+  .markdown pre {
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    padding: 0.6em 0.8em;
+    line-height: 1.45;
+    scrollbar-width: thin;
+  }
+  .markdown pre code {
+    font-size: 12px;
+  }
+  .markdown .shiki {
+    background: var(--panel) !important;
+  }
+  [data-theme="dark"] .markdown .shiki,
+  [data-theme="dark"] .markdown .shiki span {
+    color: var(--shiki-dark) !important;
+  }
+  .markdown table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+  }
+  .markdown :is(th, td) {
+    border: 1px solid var(--border);
+    padding: 0.25em 0.6em;
+    text-align: left;
+  }
+  .markdown th {
+    background: var(--panel);
+    font-weight: 600;
   }
   .gutter-add {
     width: 20px;

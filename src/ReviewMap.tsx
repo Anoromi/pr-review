@@ -2,6 +2,7 @@ import { memo, useEffect, useRef } from "react";
 import { useTranslations } from "use-intl";
 import type { Chapter } from "../shared/map";
 import { Keys } from "./components/ui/key-hint";
+import { Markdown } from "./Markdown";
 
 /** Skip-safe chapters a reader can pass over: all but moved code that failed verification. */
 export const skippable = (chapter: Chapter) => Boolean(chapter.skipSafe) && chapter.verified !== false;
@@ -70,10 +71,10 @@ export function ChapterHeader({ chapter, index }: { chapter: Chapter; index: num
         <Risk chapter={chapter} />
         <span className="ml-auto text-xs"><SkipNote chapter={chapter} /></span>
       </div>
-      <p>{chapter.uncovered ? t("uncoveredWhy") : chapter.why}</p>
+      {chapter.uncovered ? <p>{t("uncoveredWhy")}</p> : <Markdown text={chapter.why} />}
       {chapter.check.length > 0 && (
         <ul className="list-disc pl-5 text-muted-foreground">
-          {chapter.check.map((item, position) => <li key={position}>{item}</li>)}
+          {chapter.check.map((item, position) => <li key={position}><Markdown text={item} /></li>)}
         </ul>
       )}
       {chapter.missing.length > 0 && (

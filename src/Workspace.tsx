@@ -42,6 +42,7 @@ import { filteredFiles, type FileFilter } from "../shared/filters";
 import { fileStats, parseFiles, selectedCode } from "../shared/diff";
 import { chapterPatch, resolveMap, type ReviewMap } from "../shared/map";
 import { ChapterHeader, MapSidebar, skippable } from "./ReviewMap";
+import { Markdown } from "./Markdown";
 import type { Comment, Review } from "../shared/types";
 
 type Draft = Pick<Comment, "file" | "side" | "start" | "end" | "body"> & {
@@ -1193,11 +1194,11 @@ export function Workspace({ review, change, saving, theme, path, openBranch, sho
             </HotkeyButton>
           </span>
         </header>
-        <p className="comment-body">{comment.body}</p>
+        <Markdown className="comment-body" text={comment.body} />
         {(comment.replies ?? []).map((reply) => (
           <div key={reply.id} className="mt-2 border-t pt-2">
             <strong className="text-xs">{reply.author}{reply.deleted ? ` · ${t("githubReplyDeleted")}` : ""}</strong>
-            <p className="comment-body">{reply.body}</p>
+            <Markdown className="comment-body" text={reply.body} />
           </div>
         ))}
         <div className="mt-2">
