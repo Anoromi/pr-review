@@ -103,7 +103,7 @@ export function createRouter(store: ReviewStore) {
         // The user's latest reply (ReplyComposer posts as "You"), even if the agent answered since.
         const last = (comment.replies ?? []).findLastIndex((reply) => reply.author === "You");
         if (last < 0) throw new Error("This comment has no follow-up to send.");
-        await sendToThread(comment.thread.id, askMessage(current, { ...comment, replies: comment.replies!.slice(0, last + 1) }, ""));
+        await sendToThread(comment.thread.id, followUpMessage(current, comment, comment.replies![last].body, store.prDirectory(current)));
       }),
     // The review map an agent wrote to map.json (see shared/map.ts), or null.
     map: procedure.input(idInput).query(async ({ input }) => {
@@ -301,34 +301,37 @@ export function createRouter(store: ReviewStore) {
 }
 
 const fence = (text: string) => "~~~~\n" + text + "\n~~~~";
-/** The question in `comment`; with replies, the last one is a follow-up to it and the rest the conversation so far. */
+const where = (review: Review, comment: Comment) =>
+  `${comment.file}, ${comment.side === "deletions" ? "old" : "new"} lines ${comment.start}-${comment.end}, in the review "${review.title}"`;
+const replyInstruction = (review: Review, comment: Comment) => [
+  "Answer in pr-review so it appears under those lines: POST your reply as JSON (keep it short and specific). The reply is rendered as Markdown: short paragraphs, lists, `backticks` for identifiers and paths, fenced code blocks. Do not change code unless asked.",
+  fence(`curl -sS -X POST ${apiUrl}/trpc/reply -H 'Content-Type: application/json' --data-binary @- <<'JSON'
+${JSON.stringify({ id: review.id, commentId: comment.id, author: "Agent", body: "YOUR ANSWER" })}
+JSON`),
+];
+/** The first question in `comment`, with the lines and the diff around them. */
 export function askMessage(review: Review, comment: Comment, hunks: string) {
   const lines = hunks.split("\n");
-  const side = comment.side === "deletions" ? "old" : "new";
-  const replies = comment.replies ?? [];
-  const followUp = replies.at(-1);
   return [
-    `${followUp ? "Follow-up question" : "Question"} from pr-review about ${comment.file}, ${side} lines ${comment.start}-${comment.end}, in the review "${review.title}":`,
+    `Question from pr-review about ${where(review, comment)}:`,
     "",
-    ...(followUp
-      ? [
-        "The original question:",
-        fence(comment.body),
-        ...(replies.length > 1 ? ["", "The conversation since:", ...replies.slice(0, -1).map((reply) => `${reply.author}:\n${fence(reply.body)}`)] : []),
-        "",
-        "The follow-up to answer:",
-        followUp.body,
-      ]
-      : [comment.body]),
+    comment.body,
     "",
     "The lines:",
     fence(comment.code),
     ...(hunks ? ["", "The diff around them:", fence(lines.length > 200 ? [...lines.slice(0, 200), `… ${lines.length - 200} more lines, see the file`].join("\n") : hunks)] : []),
     "",
-    "Answer in pr-review so it appears under those lines: POST your reply as JSON (keep it short and specific). The reply is rendered as Markdown: short paragraphs, lists, `backticks` for identifiers and paths, fenced code blocks. Do not change code unless asked.",
-    fence(`curl -sS -X POST ${apiUrl}/trpc/reply -H 'Content-Type: application/json' --data-binary @- <<'JSON'
-${JSON.stringify({ id: review.id, commentId: comment.id, author: "Agent", body: "YOUR ANSWER" })}
-JSON`),
+    ...replyInstruction(review, comment),
+  ].join("\n");
+}
+/** A follow-up `body` on an asked comment. The thread already has the question and its answers, so only a pointer to the full conversation in `directory` goes along. */
+export function followUpMessage(review: Review, comment: Comment, body: string, directory: string) {
+  return [
+    `Follow-up from pr-review on ${where(review, comment)}. If you lost context, the full conversation is comment ${comment.id} in ${join(directory, "comments.json")}, with replies in ${join(directory, "replies.json")}.`,
+    "",
+    body.split("\n").map((line) => `> ${line}`).join("\n"),
+    "",
+    ...replyInstruction(review, comment),
   ].join("\n");
 }
 

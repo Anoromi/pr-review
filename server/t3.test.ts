@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { matchThreads, type ShellThread } from "./t3";
-import { askMessage } from "./router";
+import { followUpMessage } from "./router";
 import type { Comment, Review } from "../shared/types";
 
 test("threads match by worktree or project root and sort by last activity", () => {
@@ -27,17 +27,11 @@ test("threads match by worktree or project root and sort by last activity", () =
   assert.deepEqual(matchThreads(shell, ["/link", "/repo/"]).map((thread) => thread.id), ["root"]);
 });
 
-test("a follow-up carries the original question, the conversation and reply instructions", () => {
+test("a follow-up carries only the latest reply, a pointer to the conversation and reply instructions", () => {
   const review = { id: "r1", title: "Branch" } as Review;
-  const reply = (author: string, body: string) => ({ id: body, commentId: "c1", author, body, createdAt: "" });
-  const comment = {
-    id: "c1", file: "src/a.rs", side: "additions", start: 4, end: 5, code: "fn a() {}", body: "Why sync?",
-    replies: [reply("Agent", "Because of locks."), reply("You", "Is there really no way to not have Sync?")],
-  } as Comment;
-  const message = askMessage(review, comment, "");
-  assert.match(message, /^Follow-up question from pr-review about src\/a\.rs, new lines 4-5/);
-  assert.ok(message.indexOf("Why sync?") < message.indexOf("Agent:\n~~~~\nBecause of locks."));
-  assert.ok(message.indexOf("Because of locks.") < message.indexOf("The follow-up to answer:\nIs there really no way to not have Sync?"));
+  const comment = { id: "c1", file: "src/a.rs", side: "additions", start: 4, end: 5, code: "fn a() {}", body: "Why sync?" } as Comment;
+  const message = followUpMessage(review, comment, "Is there really\nno way?", "/pr");
+  assert.match(message, /^Follow-up from pr-review on src\/a\.rs, new lines 4-5, in the review "Branch"\. .*comment c1 in \/pr\/comments\.json, with replies in \/pr\/replies\.json\.\n\n> Is there really\n> no way\?\n/);
+  assert.doesNotMatch(message, /Why sync\?|fn a\(\)/);
   assert.match(message, /"commentId":"c1"/);
-  assert.doesNotMatch(askMessage(review, { ...comment, replies: [] }, ""), /follow-up/i);
 });
