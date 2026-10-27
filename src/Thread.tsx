@@ -16,6 +16,7 @@ const submitKey = (event: React.KeyboardEvent) =>
 export function CommentEditor({
   initialBody,
   initialDestination = "local",
+  ask,
   published = false,
   conflictBody,
   onResolveConflict,
@@ -30,6 +31,8 @@ export function CommentEditor({
 }: {
   initialBody: string;
   initialDestination?: Destination;
+  /** Set to the agent thread's title when this is a question for it. */
+  ask?: string;
   published?: boolean;
   conflictBody?: string;
   onResolveConflict: (useRemote: boolean) => void;
@@ -75,7 +78,7 @@ export function CommentEditor({
         id="comment-body"
         ref={editor}
         aria-label={t("commentLabel")}
-        placeholder={t("commentPlaceholder")}
+        placeholder={t(ask === undefined ? "commentPlaceholder" : "askPlaceholder")}
         className="min-h-24 leading-relaxed"
         value={body}
         disabled={saving}
@@ -91,7 +94,7 @@ export function CommentEditor({
             event.preventDefault();
             if (body.trim()) onLeave();
             else onDiscard();
-          } else if (event.ctrlKey && event.key === "g") {
+          } else if (event.ctrlKey && event.key === "g" && ask === undefined) {
             event.preventDefault();
             toggleDestination();
           }
@@ -103,16 +106,16 @@ export function CommentEditor({
         <Button type="button" variant="outline" size="xs" className="ml-2" onClick={() => onResolveConflict(false)}>{t("githubKeepEdit")}</Button>
       </div>}
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Button type="button" variant="ghost" size="xs" className="text-muted-foreground" disabled={saving || published} aria-label={t("commentDestination")} onClick={toggleDestination}>
+        {ask === undefined && <Button type="button" variant="ghost" size="xs" className="text-muted-foreground" disabled={saving || published} aria-label={t("commentDestination")} onClick={toggleDestination}>
           {t(destination === "github" ? "localAndGitHub" : "localOnly")}
           <Keys value="Ctrl+g" />
-        </Button>
+        </Button>}
         <Button variant="ghost" size="xs" type="button" className="ml-auto text-muted-foreground" disabled={saving} onClick={onDiscard}>
           {t("cancel")}
           {!body.trim() && <Keys value="Escape" />}
         </Button>
         <Button type="submit" size="xs" disabled={saving || !body.trim()}>
-          {saving ? t("saving") : t("saveComment")}
+          {saving ? t("saving") : ask === undefined ? t("saveComment") : t("askThread", { title: ask })}
           <Keys value="Ctrl+Enter" />
         </Button>
       </div>

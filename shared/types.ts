@@ -48,6 +48,8 @@ export interface Reply {
 
 export interface Comment {
   destination?: "local" | "github";
+  /** The T3 Code thread this question was sent to (see the `ask` mutation). */
+  thread?: { id: string; title: string };
   github?: GitHubComment;
   resolved?: boolean;
   replies?: Reply[];

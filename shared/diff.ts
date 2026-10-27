@@ -50,3 +50,28 @@ export function fileStats(file: FileDiffMetadata) {
     { added: 0, removed: 0 },
   );
 }
+
+/** The diff hunks of `file` that overlap lines `start`–`end` on `side`, as unified diff text. */
+export function hunkText(
+  file: FileDiffMetadata,
+  side: Comment["side"],
+  start: number,
+  end: number,
+): string {
+  const prefix = side === "additions" ? "addition" : "deletion";
+  const clean = (line: string) => line.replace(/\r?\n$/, "");
+  return file.hunks
+    .filter((hunk) => hunk[`${prefix}Start`] <= end && start < hunk[`${prefix}Start`] + hunk[`${prefix}Count`])
+    .flatMap((hunk) => [
+      `@@ -${hunk.deletionStart},${hunk.deletionCount} +${hunk.additionStart},${hunk.additionCount} @@`,
+      ...hunk.hunkContent.flatMap((content) =>
+        content.type === "context"
+          ? file.additionLines.slice(content.additionLineIndex, content.additionLineIndex + content.lines).map((line) => ` ${clean(line)}`)
+          : [
+              ...file.deletionLines.slice(content.deletionLineIndex, content.deletionLineIndex + content.deletions).map((line) => `-${clean(line)}`),
+              ...file.additionLines.slice(content.additionLineIndex, content.additionLineIndex + content.additions).map((line) => `+${clean(line)}`),
+            ],
+      ),
+    ])
+    .join("\n");
+}

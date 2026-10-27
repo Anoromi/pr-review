@@ -58,6 +58,10 @@ LOCAL_REPO=/path/to/your/checkout
 
 Opening `?checkout=<absolute path>` (for example from a hyprnav browser slot, which passes a T3 thread's worktree) reviews that checkout instead: its repository and current branch come from Git, so any project works without configuration. If the branch has an open PR, the PR opens; otherwise the branch's commits are listed. The parameter stays in the URL (an opened review adds `&review=`), so jumping to the same checkout again leaves the URL unchanged and the browser only focuses the tab.
 
+- `T3CODE_TOKEN`: a T3 Code session token for [Ask the agent](#ask-the-agent). Issue one with `node <t3code>/apps/server/dist/bin.mjs auth session issue --token-only --label pr-review --scope orchestration:read --scope orchestration:operate`.
+- `T3CODE_URL`: the T3 Code server, by default the `origin` in `~/.t3/userdata/server-runtime.json`.
+- `PORT` and `API_PORT`: the UI and API ports (4318 and 4319), for running a second instance.
+
 GitHub remotes are recognised in HTTPS, SSH and scp-like form, including SSH host aliases from `~/.ssh/config` (resolved with `ssh -G`).
 
 ## Local diffs and snapshots
@@ -93,6 +97,7 @@ Defaults follow a Dvorak home row, with `j`/`k`/`l` and the arrow keys as aliase
 - **Cursor:** `h` `t` `n` `s` left/down/up/right, `T`/`N` 8 lines, `w` `b` `W` `B` words, `_` `-` line start/end, `Ctrl-d`/`Ctrl-u` half page, `gg`/`G` top/bottom, `Alt-h`/`Alt-s` old/new side, `Alt-t`/`Alt-n` reveal skipped lines.
 - **Jump:** `]` `[` next/previous file, `f` go to file, `}` `{` hunk, `)` `(` comment, `/` search, `;` `,` next/previous match.
 - **Files:** `Space` marks the file viewed, collapses it and moves to the next unviewed file. `m` toggles viewed. `za` `zc` `zo` toggle/collapse/expand, `zM` `zR` all files.
+- **Ask the agent:** `a` asks the agent thread about the cursor line or selection, `A` asks it to explain them without typing, `gA` picks the thread. See [Ask the agent](#ask-the-agent).
 - **Comments:** `c` comments on the cursor line or selection (or returns to an unfinished draft). In the editor, `Ctrl-Enter` saves, `Ctrl-g` switches between local and GitHub, and `Esc` returns to the diff, keeping a non-empty draft. On a thread: `r` reply, `x` resolve/reopen, `e` edit, `D` twice to delete. `gc` lists all comments.
 - **Selection:** `v` characters, `V` lines, `y` copy, `Esc` cancel.
 - **View:** `u` split/unified, `gw` wrap, `\` file sidebar, `gt` theme.
@@ -104,6 +109,12 @@ Commands live in one table per view (`useCommands` in `src/keys.ts`). To rebind,
 ## File filters
 
 `gf` opens the repository's file filters: named lists of gitignore-style patterns (`tests/`, `*.test.ts`, `/docs/`). Files matching an enabled filter stay in every review of that repository but start collapsed, like generated files, and are dimmed in the sidebar, which also shows how many matched. `zf` expands or collapses them all for the current review. Filters are stored in `.reviews/filters/`, keyed by the GitHub repository, so all its checkouts share them and nothing is written to the reviewed repository.
+
+## Ask the agent
+
+The T3 Code thread that wrote the code can answer questions about it in place. Put the cursor on a line or select a range, press `a`, type the question and press `Ctrl-Enter`; `A` sends "Explain this code" without opening the editor. pr-review sends the thread the question, the file and line range, the selected lines, and the diff hunks around them, with a `curl` command for the `reply` mutation. The agent's answer then appears under the lines like any reply.
+
+Questions go to the most recently active thread working in the review's checkout (its worktree, or the project root for threads without one). The status line shows it; `gA` lists the matching threads to pick another. Questions are saved as local comments marked with the thread, so `r`, `x` and `gc` work on them as on any comment. This needs `T3CODE_TOKEN` (see [Configuration](#configuration)).
 
 ## Agent conversations
 

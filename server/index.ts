@@ -4,6 +4,7 @@ import { resolve, extname, sep } from "node:path";
 import { createHTTPHandler } from "@trpc/server/adapters/standalone";
 import { createRouter } from "./router";
 import { ReviewStore } from "./store";
+import { apiPort as port, uiPort } from "./port";
 
 const store = new ReviewStore();
 const handler = createHTTPHandler({
@@ -18,15 +19,9 @@ const types: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".woff2": "font/woff2",
 };
-const port = process.env.NODE_ENV === "production" ? 4318 : 4319;
-const allowedHosts = new Set([
-  "127.0.0.1:4317",
-  "localhost:4317",
-  "127.0.0.1:4318",
-  "localhost:4318",
-  "127.0.0.1:4319",
-  "localhost:4319",
-]);
+const allowedHosts = new Set(
+  [4317, uiPort, port].flatMap((value) => [`127.0.0.1:${value}`, `localhost:${value}`]),
+);
 
 const server = createServer(async (request, response) => {
   // This server can read private PRs using the local gh account. Keep it local.

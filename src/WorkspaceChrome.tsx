@@ -128,7 +128,37 @@ export function FilePicker({ open, onOpenChange, files, viewed, comments, onPick
   );
 }
 
-export function StatusLine({ mode, fallbackFile, fileIndex, fileCount, selection, search, draft, viewed, total, saving, path }: {
+export type AgentThread = { id: string; title: string; updatedAt: string };
+
+/** Picks the T3 Code thread that questions go to. */
+export function ThreadPicker({ open, onOpenChange, threads, current, error, onPick }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  threads: AgentThread[];
+  current?: string;
+  error: string;
+  onPick: (id: string) => void;
+}) {
+  const t = useTranslations("app");
+  return (
+    <CommandDialog open={open} onOpenChange={onOpenChange} title={t("agentThreads")} description={t("agentThreadsDescription")} showCloseButton={false} className="top-[18%] translate-y-0 sm:max-w-2xl">
+      <CommandInput placeholder={t("filterThreads")} spellCheck={false} />
+      <CommandList className="max-h-[min(460px,60vh)]">
+        <CommandEmpty>{error || t("noAgentThread")}</CommandEmpty>
+        {open && threads.map((thread) => (
+          <CommandItem key={thread.id} value={`${thread.title} ${thread.id}`} className="mx-1 gap-2 py-1.5 text-[13px]"
+            onSelect={() => { onPick(thread.id); onOpenChange(false); }}>
+            <span className="flex w-3.5 shrink-0 justify-center">{thread.id === current && <Check className="size-3" />}</span>
+            <span className="min-w-0 truncate font-medium">{thread.title}</span>
+            <span className="ml-auto shrink-0 text-xs text-muted-foreground">{new Date(thread.updatedAt).toLocaleString()}</span>
+          </CommandItem>
+        ))}
+      </CommandList>
+    </CommandDialog>
+  );
+}
+
+export function StatusLine({ mode, fallbackFile, fileIndex, fileCount, selection, search, draft, viewed, total, saving, path, agent }: {
   mode: "normal" | "visual" | "visualLine";
   fallbackFile: string;
   fileIndex: number;
@@ -140,6 +170,8 @@ export function StatusLine({ mode, fallbackFile, fileIndex, fileCount, selection
   total: Stats;
   saving: boolean;
   path: string;
+  /** The agent thread questions go to. */
+  agent?: string;
 }) {
   const t = useTranslations("app");
   const position = useStore(cursorPosition);
@@ -161,6 +193,7 @@ export function StatusLine({ mode, fallbackFile, fileIndex, fileCount, selection
       )}
       {draft && <span className="flex shrink-0 items-center gap-1.5">{t("draft")}<Keys value="c" /></span>}
       <span className="ml-auto shrink-0 font-semibold" aria-live="polite">{pending}</span>
+      {agent && <span className="flex min-w-0 max-w-[30ch] items-center gap-1.5 text-muted-foreground" title={agent}><span className="truncate">{t("agentTarget", { title: agent })}</span><Keys value="g A" /></span>}
       <span className="shrink-0 text-muted-foreground">{t("progress", { viewed, total: fileCount })}</span>
       <span className="flex shrink-0 gap-1.5">
         <span className="text-added">+{total.added}</span>

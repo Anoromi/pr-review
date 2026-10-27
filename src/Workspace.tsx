@@ -8,6 +8,8 @@ import { CommentEditor, ReplyComposer } from "./Thread";
 import {
   FilePicker,
   FileSidebar,
+  ThreadPicker,
+  type AgentThread,
   StatusLine,
   cursorPosition,
 } from "./WorkspaceChrome";
@@ -42,6 +44,8 @@ import type { Comment, Review } from "../shared/types";
 
 type Draft = Pick<Comment, "file" | "side" | "start" | "end" | "body"> & {
   commentId?: string;
+  /** A question for the agent thread instead of a review comment. */
+  ask?: boolean;
   destination?: "local" | "github";
   expectedBody?: string;
 };
@@ -123,6 +127,23 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     }
   });
   const [picker, setPicker] = useState(false);
+  // T3 Code threads working in this checkout, most recently active first;
+  // questions (`a`, `A`) go to the chosen one.
+  const [threads, setThreads] = useState<AgentThread[]>([]);
+  const [threadId, setThreadId] = useState<string>();
+  const [threadsError, setThreadsError] = useState("");
+  const [threadPicker, setThreadPicker] = useState(false);
+  const thread = threads.find((item) => item.id === threadId) ?? threads[0];
+  function loadThreads() {
+    api.threads.query({ id: review.id })
+      .then((next) => { setThreads(next); setThreadsError(""); })
+      .catch((error) => setThreadsError(error instanceof Error ? error.message : t("error")));
+  }
+  useEffect(loadThreads, [review.id]);
+  function agentThread() {
+    if (thread) return thread;
+    toast.error(threadsError || t("noAgentThread"), { id: "workspace" });
+  }
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [layout, setLayout] = useState<"split" | "unified">(() => {
     try {
@@ -444,6 +465,7 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
   function startComment(
     range: SelectedLineRange | null,
     filename = selection ? selectionFile : active,
+    ask = false,
   ) {
     const current = files.find((file) => file.name === filename);
     if (!range || !current) {
@@ -465,7 +487,7 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
       selectedCode(current, side, start, end);
       if (end - start >= 500) throw new Error("Select at most 500 lines.");
       endVisual();
-      updateDraft({ file: current.name, side, start, end, body: "" });
+      updateDraft({ file: current.name, side, start, end, body: "", ...(ask ? { ask } : {}) });
       setWarning("");
       } catch (error) {
       setWarning(error instanceof Error ? error.message : t("error"));
@@ -474,10 +496,15 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
 
   async function save(body: string, destination: "local" | "github") {
     if (!draft || !body.trim() || saving) return;
+    const target = draft.ask ? agentThread() : undefined;
+    if (draft.ask && !target) return;
     if (
-      await change(() =>
-        api.saveComment.mutate({ id: review.id, ...draft!, body, destination }),
-      )
+      await change(() => {
+        const { ask: _ask, ...fields } = draft!;
+        return target
+          ? api.ask.mutate({ id: review.id, file: fields.file, side: fields.side, start: fields.start, end: fields.end, body, threadId: target.id })
+          : api.saveComment.mutate({ id: review.id, ...fields, body, destination });
+      })
     ) {
       updateDraft();
       setSelection(null);
@@ -891,12 +918,34 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     };
     requestAnimationFrame(focus);
   }
-  function commentHere() {
-    if (draft) return focusDraftEditor();
-    if (selection) return startComment(selection, selectionFile);
+  /** The selection, or else the cursor line. */
+  function rangeHere(): [SelectedLineRange, string] | undefined {
+    if (selection) return [selection, selectionFile];
     if (!cursor.current) moveLine(0);
     const position = cursor.current;
-    if (position) startComment({ start: position.line, end: position.line, side: position.side }, position.id);
+    if (position) return [{ start: position.line, end: position.line, side: position.side }, position.id];
+  }
+  function commentHere(ask = false) {
+    if (draft) return focusDraftEditor();
+    const here = rangeHere();
+    if (here) startComment(here[0], here[1], ask);
+  }
+  // Sends the default question without opening the editor.
+  async function explainHere() {
+    const here = rangeHere();
+    const target = agentThread();
+    if (!here || !target) return;
+    const [range, file] = here;
+    if (range.endSide && range.endSide !== (range.side ?? "additions")) return setWarning(t("crossSide"));
+    if (await change(() => api.ask.mutate({
+      id: review.id, file, side: range.side ?? "additions",
+      start: Math.min(range.start, range.end), end: Math.max(range.start, range.end),
+      body: t("explainQuestion"), threadId: target.id,
+    }))) {
+      endVisual();
+      setSelection(null);
+      toast.success(t("askedThread", { title: target.title }), { id: "workspace" });
+    }
   }
   function setViewed(file: string, viewed: boolean) {
     return change(() => api.viewed.mutate({ id: review.id, file, viewed }));
@@ -976,7 +1025,10 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
     { id: "collapseAll", group: "files", keys: ["z M"], run: () => setAllCollapsed(true) },
     { id: "expandAll", group: "files", keys: ["z R"], run: () => setAllCollapsed(false) },
 
-    { id: "comment", group: "comments", keys: ["c"], enabled: () => !saving, run: commentHere },
+    { id: "comment", group: "comments", keys: ["c"], enabled: () => !saving, run: () => commentHere() },
+    { id: "ask", group: "comments", keys: ["a"], enabled: () => !saving, run: () => commentHere(true) },
+    { id: "explain", group: "comments", keys: ["A"], enabled: () => !saving, run: () => void explainHere() },
+    { id: "agentThread", group: "comments", keys: ["g A"], run: () => { loadThreads(); setThreadPicker(true); } },
     { id: "reply", group: "comments", keys: ["r"], enabled: () => Boolean(nearby()), run: replyNearby },
     { id: "resolve", group: "comments", keys: ["x"], enabled: () => { const comment = nearby(); return Boolean(comment) && !saving && !(comment!.github && !comment!.github.canResolve); },
       run: () => { const comment = nearby()!; void change(() => api.resolveComment.mutate({ id: review.id, commentId: comment.id, resolved: !comment.resolved })); } },
@@ -1028,7 +1080,9 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
           <strong className="font-semibold text-foreground">{rangeLabel(comment)}</strong>
           {comment.github
             ? <a className="underline" href={comment.github.url} target="_blank" rel="noreferrer">{comment.github.author} · {t(comment.github.deleted ? "githubDeleted" : comment.github.outdated ? "githubOutdated" : "publishedGitHub")}</a>
-            : <span>{t(comment.destination === "github" ? "queuedGitHub" : "localOnly")}</span>}
+            : comment.thread
+              ? <span className="truncate" title={comment.thread.title}>{t("askedThread", { title: comment.thread.title })}</span>
+              : <span>{t(comment.destination === "github" ? "queuedGitHub" : "localOnly")}</span>}
           {comment.resolved && <span>· {t("resolvedComment")}</span>}
           <span className="ml-auto flex gap-1">
             <HotkeyButton size="xs" hotkey="e" showHotkey={near} disabled={saving || Boolean(comment.github && !comment.github.canEdit)} onClick={() => edit(comment)}>
@@ -1212,6 +1266,7 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
                     key={`${metadata.draft.file}:${metadata.draft.side}:${metadata.draft.start}:${metadata.draft.end}:${metadata.draft.commentId ?? "new"}`}
                     initialBody={draftBody.current}
                     initialDestination={metadata.draft.destination}
+                    ask={metadata.draft.ask ? thread?.title ?? "" : undefined}
                     published={Boolean(metadata.draft.expectedBody !== undefined)}
                     conflictBody={metadata.draft.expectedBody !== undefined && review.comments.find(c => c.id === metadata.draft!.commentId)?.github?.body !== metadata.draft.expectedBody ? review.comments.find(c => c.id === metadata.draft!.commentId)?.github?.body : undefined}
                     onResolveConflict={useRemote => {
@@ -1266,7 +1321,9 @@ export function Workspace({ review, change, saving, theme, path }: Props) {
         total={total}
         saving={saving}
         path={path}
+        agent={thread?.title}
       />
+      <ThreadPicker open={threadPicker} onOpenChange={setThreadPicker} threads={threads} current={thread?.id} error={threadsError} onPick={setThreadId} />
       <FilePicker
         open={picker}
         onOpenChange={setPicker}

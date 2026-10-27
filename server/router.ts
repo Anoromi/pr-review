@@ -12,27 +12,31 @@ import { readFilters, writeFilters } from "./filters";
 import { localPullMetadata, listCheckoutPulls, listMyPulls, pullForBranch } from "./github";
 import { checkoutRepo, currentBranch, githubRepo, githubRepoOrNull } from "./repository";
 import { markdown } from "./markdown";
-import { parseFiles, selectedCode } from "../shared/diff";
+import { listThreads, sendToThread } from "./t3";
+import { apiUrl } from "./port";
+import { hunkText, parseFiles, selectedCode } from "../shared/diff";
+import type { Comment, Review } from "../shared/types";
 
 const t = initTRPC.create();
 const idInput = z.object({ id: z.string().regex(/^[a-f0-9]{24}$/) });
 // Which checkout a request works on (see checkoutRepo); omitted = the default.
 const scoped = z.object({ checkout: z.string().min(1).max(4096).optional() });
-const commentInput = idInput
+const linesInput = idInput.extend({
+  file: z.string().min(1).max(4096),
+  side: z.enum(["additions", "deletions"]),
+  start: z.number().int().positive(),
+  end: z.number().int().positive(),
+  body: z.string().trim().min(1).max(50_000),
+});
+const validRange = (input: { start: number; end: number }) => input.end >= input.start && input.end - input.start < 500;
+const commentInput = linesInput
   .extend({
     commentId: z.string().min(1).optional(),
     destination: z.enum(["local", "github"]).optional(),
     expectedBody: z.string().optional(),
-    file: z.string().min(1).max(4096),
-    side: z.enum(["additions", "deletions"]),
-    start: z.number().int().positive(),
-    end: z.number().int().positive(),
-    body: z.string().trim().min(1).max(50_000),
   })
-  .refine(
-    (input) => input.end >= input.start && input.end - input.start < 500,
-    "Select between 1 and 500 lines.",
-  );
+  .refine(validRange, "Select between 1 and 500 lines.");
+const askInput = linesInput.extend({ threadId: z.string().min(1) }).refine(validRange, "Select between 1 and 500 lines.");
 
 export function createRouter(store: ReviewStore) {
   const sync = new ReviewSync(store);
@@ -47,7 +51,45 @@ export function createRouter(store: ReviewStore) {
       });
     }
   });
+  // The selected code and the diff hunks around it, from the file with its
+  // loaded context so lines expanded outside the hunks count too.
+  async function selectedLines(review: Review, input: { file: string; side: Comment["side"]; start: number; end: number }) {
+    const file = parseFiles(review.patch).find((file) => file.name === input.file);
+    if (!file) throw new Error("This file is not part of the review.");
+    const context = await readContext(store.path(review.id), file.name);
+    if (context) hydratePartialDiff("merge", file, context);
+    return { code: selectedCode(file, input.side, input.start, input.end), hunks: hunkText(file, input.side, input.start, input.end) };
+  }
+  // The checkout the review's code lives in, where its agent threads work.
+  function reviewCheckout(review: Review) {
+    if (review.source.kind !== "local") throw new Error("Only reviews of a local checkout have agent threads.");
+    return review.source.worktree ?? review.source.repo;
+  }
+  async function threadTitle(review: Review, threadId: string) {
+    const thread = (await listThreads(reviewCheckout(review))).find((thread) => thread.id === threadId);
+    if (!thread) throw new Error("That agent thread no longer works in this checkout.");
+    return thread.title;
+  }
   return t.router({
+    // T3 Code threads working in the review's checkout, most recently active first.
+    threads: procedure.input(idInput).query(async ({ input }) => listThreads(reviewCheckout(await store.read(input.id)))),
+    // A question about lines of the diff, saved as a comment and sent to the
+    // agent thread, which answers through the `reply` mutation.
+    ask: procedure.input(askInput)
+      .mutation(async ({ input }) => {
+        const current = await store.read(input.id);
+        const title = await threadTitle(current, input.threadId);
+        const { code, hunks } = await selectedLines(current, input);
+        const comment: Comment = {
+          destination: "local", id: randomUUID(), snapshotId: current.id, thread: { id: input.threadId, title },
+          file: input.file, side: input.side, start: input.start, end: input.end,
+          body: input.body, code, createdAt: new Date().toISOString(),
+        };
+        // Sent first, so a failed send leaves no question that never arrived;
+        // the agent takes far longer to answer than this takes to save.
+        await sendToThread(input.threadId, askMessage(current, comment, hunks));
+        return store.update(input.id, (review) => { review.comments.push(comment); });
+      }),
     branches: procedure.input(scoped.optional()).query(({ input }) => listBranches(checkoutRepo(input?.checkout))),
     branchAuthors: procedure.input(scoped.extend({ branch: z.string().min(1) })).query(({ input }) => listBranchAuthors(input.branch, checkoutRepo(input.checkout))),
     branchCommits: procedure.input(scoped.extend({ branch: z.string().min(1), author: z.string().min(1).max(1000).optional(), search: z.string().trim().max(1000).default(""), skip: z.number().int().nonnegative().default(0) })).query(({ input }) => listBranchCommits(input.branch, input.skip, checkoutRepo(input.checkout), input.author, input.search)),
@@ -163,18 +205,12 @@ export function createRouter(store: ReviewStore) {
         return sync.edit(input.id, input.commentId!, input.body, input.expectedBody);
       }
       return store.update(input.id, async (review) => {
-        const file = parseFiles(review.patch).find(
-          (file) => file.name === input.file,
-        );
-        if (!file) throw new Error("This file is not part of the review.");
-        const context = await readContext(store.path(input.id), file.name);
-        if (context) hydratePartialDiff("merge", file, context);
-        const code = selectedCode(file, input.side, input.start, input.end);
         const existing = input.commentId
           ? review.comments.find((comment) => comment.id === input.commentId)
           : undefined;
         if (input.commentId && !existing)
           throw new Error("This comment no longer exists. Reload the review.");
+        const { code } = await selectedLines(review, input);
         const comment = {
           destination: input.destination ?? existing?.destination ?? "local",
           id: existing?.id ?? randomUUID(),
@@ -224,6 +260,26 @@ export function createRouter(store: ReviewStore) {
       };
     }),
   });
+}
+
+const fence = (text: string) => "~~~~\n" + text + "\n~~~~";
+function askMessage(review: Review, comment: Comment, hunks: string) {
+  const lines = hunks.split("\n");
+  const side = comment.side === "deletions" ? "old" : "new";
+  return [
+    `Question from pr-review about ${comment.file}, ${side} lines ${comment.start}-${comment.end}, in the review "${review.title}":`,
+    "",
+    comment.body,
+    "",
+    "The lines:",
+    fence(comment.code),
+    ...(hunks ? ["", "The diff around them:", fence(lines.length > 200 ? [...lines.slice(0, 200), `… ${lines.length - 200} more lines, see the file`].join("\n") : hunks)] : []),
+    "",
+    "Answer in pr-review so it appears under those lines: POST your reply as JSON (keep it short and specific, plain text, newlines allowed). Do not change code unless asked.",
+    fence(`curl -sS -X POST ${apiUrl}/trpc/reply -H 'Content-Type: application/json' --data-binary @- <<'JSON'
+${JSON.stringify({ id: review.id, commentId: comment.id, author: "Agent", body: "YOUR ANSWER" })}
+JSON`),
+  ].join("\n");
 }
 
 export type AppRouter = ReturnType<typeof createRouter>;

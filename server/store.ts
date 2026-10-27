@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Review, ReviewSummary, GitHubState } from "../shared/types";
 import { z } from "zod";
 import { markdown } from "./markdown";
+import { apiUrl } from "./port";
 
 export class ReviewStore {
   private queue: Promise<unknown> = Promise.resolve();
@@ -143,7 +144,7 @@ GitHub synchronization is stored in github.json beside these files. It contains 
 
 Resolution state is in resolved.json, an object mapping comment IDs to true (resolved) or false (open). Preserve other entries and replace the file atomically. The app polls this file too.
 
-For concurrent agents, use POST http://127.0.0.1:4319/trpc/reply with JSON {"id":"SNAPSHOT_ID","commentId":"COMMENT_ID","author":"Agent","body":"Your reply"}. Use snapshotId from the comment as id. This endpoint serializes replies from multiple agents. Direct file edits must have a single writer.
+For concurrent agents, use POST ${apiUrl}/trpc/reply with JSON {"id":"SNAPSHOT_ID","commentId":"COMMENT_ID","author":"Agent","body":"Your reply"}. Use snapshotId from the comment as id. This endpoint serializes replies from multiple agents. Direct file edits must have a single writer.
 `, { mode: 0o600 });
     try { await writeFile(join(directory, "resolved.json"), "{}\n", { flag: "wx", mode: 0o600 }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
