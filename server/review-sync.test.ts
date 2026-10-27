@@ -11,7 +11,7 @@ const patch = "diff --git a/a.txt b/a.txt\nindex 7898192..6178079 100644\n--- a/
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "github-review-test-"));
   const store = new ReviewStore(directory);
-  const review: Review = { id: "a".repeat(24), title: "Test", source: { kind: "github", url: "https://github.com/example/repo/pull/1" }, revision: "b".repeat(40), baseRevision: "c".repeat(40), patch, viewed: [], updatedAt: new Date().toISOString(), comments: [
+  const review: Review = { id: "a".repeat(24), title: "Test", source: { kind: "github", url: "https://github.com/example/repo/pull/1" }, revision: "b".repeat(40), baseRevision: "c".repeat(40), patch, updatedAt: new Date().toISOString(), comments: [
     { id: "local", snapshotId: "a".repeat(24), destination: "local", file: "a.txt", side: "additions", start: 1, end: 1, code: "b", body: "private", createdAt: new Date().toISOString() },
     { id: "draft", snapshotId: "a".repeat(24), destination: "github", file: "a.txt", side: "additions", start: 1, end: 1, code: "b", body: "public", createdAt: new Date().toISOString() },
   ] };
@@ -67,7 +67,7 @@ test("publishes only GitHub drafts, imports without duplicates, preserves local 
     assert.equal((await f.store.read(f.review.id)).comments.find(c => c.id === "draft")?.body, "edited");
     f.remote.comments[0].body = "changed remotely";
     await assert.rejects(f.service.edit(f.review.id, "draft", "local draft", "edited"), /changed on GitHub/);
-    await f.store.update(f.review.id, review => { review.viewed = ["a.txt"]; });
+    await f.store.update(f.review.id, review => { review.title = "Renamed"; });
     assert.equal((await f.store.read(f.review.id)).comments.length, 2);
     f.remote.comments = [];
     await f.service.sync(f.review.id, true);

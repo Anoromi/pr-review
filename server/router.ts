@@ -1,5 +1,5 @@
 import { ReviewSync } from "./review-sync";
-import { listBranches, listBranchAuthors, listBranchCommits, loadBranchCommit, loadBranchReview } from "./branches";
+import { branchRows, commitPatch, listBranches, loadBranchReview, loadCommit, ownCommits } from "./branches";
 import { loadLocalReview, withGeneratedFiles } from "./local";
 import { hydratePartialDiff } from "@pierre/diffs";
 import { loadContext, readContext } from "./context";
@@ -12,12 +12,14 @@ import { readFilters, writeFilters } from "./filters";
 import { localPullMetadata, listCheckoutPulls, listMyPulls, pullForBranch } from "./github";
 import { checkoutRepo, currentBranch, githubRepo, githubRepoOrNull } from "./repository";
 import { markdown } from "./markdown";
-import { listThreads, readShell, runState, sendToThread, type ShellThread } from "./t3";
-import { reviewMapSchema } from "../shared/map";
-import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
+import { listThreads, readShell, sendToThread } from "./t3";
+import { resolveMap } from "../shared/map";
+import { commitChapters } from "../shared/read";
+import { agentCheckouts, agentProgress, latestSnapshots, readingProgress, readMap } from "./home";
+import { fileAt, grep } from "./code";
+import { writeFile, mkdir } from "node:fs/promises";
 import { apiUrl } from "./port";
 import { hunkText, parseFiles, selectedCode } from "../shared/diff";
-import { awaitingReply } from "../shared/progress";
 import type { Comment, Review } from "../shared/types";
 
 const t = initTRPC.create();
@@ -107,14 +109,7 @@ export function createRouter(store: ReviewStore) {
         await sendToThread(comment.thread.id, followUpMessage(current, comment, comment.replies![last].body, store.prDirectory(current)));
       }),
     // The review map an agent wrote to map.json (see shared/map.ts), or null.
-    map: procedure.input(idInput).query(async ({ input }) => {
-      const file = join(store.prDirectory(await store.read(input.id)), "map.json");
-      let text: string;
-      try { text = await readFile(file, "utf8"); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
-      try { return reviewMapSchema.parse(JSON.parse(text)); }
-      catch (error) { throw new Error(`${file} is not a valid review map: ${error instanceof z.ZodError ? z.prettifyError(error) : error instanceof Error ? error.message : error}`); }
-    }),
+    map: procedure.input(idInput).query(async ({ input }) => readMap(store, await store.read(input.id))),
     // Asks the agent thread to write map.json for this review's diff.
     // The request is kept in map-request.json, so `progress` can follow it.
     requestMap: procedure.input(idInput.extend({ threadId: z.string().min(1) })).mutation(async ({ input }) => {
@@ -128,52 +123,66 @@ export function createRouter(store: ReviewStore) {
         `Run the review-map skill (~/.agents/skills/review-map/SKILL.md) for the review "${review.title}" in pr-review.`,
         "",
         `The diff to map is ${join(directory, "map-diff.patch")} (base ${review.baseRevision}, head ${review.revision}). Name hunks by the starts in its @@ headers.`,
+        "Add a note (`notes`: file, side, start, end, why) on each non-obvious line or small range: the reason it was written this way (the motivation, the alternative rejected, the constraint), not a restatement of the diff. Skip trivial lines; do not annotate every line. pr-review shows each note under its lines and lists notes on lines the diff does not show.",
         `Write the map to ${join(directory, "map.json")}. pr-review shows it as soon as the file is valid; an invalid file shows its errors there.`,
       ].join("\n"));
       await writeFile(join(directory, "map-request.json"), JSON.stringify({ threadId: input.threadId, title, requestedAt }) + "\n", { mode: 0o600 });
     }),
-    // What the agent threads are doing with what was sent to them: the last
-    // map request (ready once map.json changed after it) and the questions
-    // still owed a reply. T3 Code is only asked while something is pending.
-    progress: procedure.input(idInput).query(async ({ input }) => {
-      const review = await store.read(input.id);
-      const directory = store.prDirectory(review);
-      let job: { threadId: string; title: string; requestedAt: string } | null = null;
-      try { job = JSON.parse(await readFile(join(directory, "map-request.json"), "utf8")); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      let mapChanged = 0;
-      try { mapChanged = (await stat(join(directory, "map.json"))).mtimeMs; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      const mapReady = job !== null && mapChanged > Date.parse(job.requestedAt);
-      const waiting = review.comments.flatMap((comment) => {
-        const since = awaitingReply(comment);
-        return since ? [{ id: comment.id, threadId: comment.thread!.id, since }] : [];
-      });
-      let threads = new Map<string, ShellThread>();
-      let error: string | null = null;
-      if ((job && !mapReady) || waiting.length) {
-        try { threads = new Map((await readShell()).threads.map((thread) => [thread.id, thread])); }
-        catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
-      }
-      // Without T3 Code's answer, everything pending stays "requested" next to the error.
-      const state = (threadId: string, since: string) => error ? "requested" as const : runState(threads.get(threadId), since);
-      return {
-        error,
-        map: job && { title: job.title, requestedAt: job.requestedAt, state: mapReady ? "ready" as const : state(job.threadId, job.requestedAt) },
-        replies: Object.fromEntries(waiting.map((item) => [item.id, state(item.threadId, item.since)])),
-      };
-    }),
+    // What the agent threads are doing with the map request and questions (see agentProgress).
+    progress: procedure.input(idInput).query(async ({ input }) => agentProgress(store, await store.read(input.id), readShell)),
     branches: procedure.input(scoped.optional()).query(({ input }) => listBranches(checkoutRepo(input?.checkout))),
-    branchAuthors: procedure.input(scoped.extend({ branch: z.string().min(1) })).query(({ input }) => listBranchAuthors(input.branch, checkoutRepo(input.checkout))),
-    branchCommits: procedure.input(scoped.extend({ branch: z.string().min(1), author: z.string().min(1).max(1000).optional(), search: z.string().trim().max(1000).default(""), skip: z.number().int().nonnegative().default(0) })).query(({ input }) => listBranchCommits(input.branch, input.skip, checkoutRepo(input.checkout), input.author, input.search)),
-    openCommit: procedure.input(scoped.extend({ branch: z.string().min(1), commit: z.string().regex(/^[a-f0-9]{40}$/) })).mutation(async ({ input }) => {
-      const fresh = await loadBranchCommit(input.branch, input.commit, store, checkoutRepo(input.checkout));
+    // The review's own commits, oldest first, each hunk with its id (for read
+    // ticks) and the map chapter it belongs to (see commitChapters).
+    commits: procedure.input(idInput).query(async ({ input }) => {
+      const review = await store.read(input.id);
+      if (review.source.kind !== "local") throw new Error("Only reviews of a local checkout have commits.");
+      const { repo } = review.source;
+      const files = parseFiles(review.patch);
+      // Without a valid map the commits have no chapters; the map's errors show in the Map tab.
+      const map = await readMap(store, review).catch(() => null);
+      const chapters = map ? resolveMap(map, files) : [];
+      return Promise.all((await ownCommits(review)).map(async (commit) => ({
+        ...commit, hunks: commitChapters(parseFiles(await commitPatch(repo, commit.sha)), files, chapters),
+      })));
+    }),
+    // A commit of the review as its own snapshot in the same conversation folder.
+    openCommit: procedure.input(idInput.extend({ commit: z.string().regex(/^[a-f0-9]{40}$/) })).mutation(async ({ input }) => {
+      const fresh = await loadCommit(await store.read(input.id), input.commit, store);
       return store.transaction(async () => {
         try { return await store.read(fresh.id); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         return store.save(fresh);
       });
     }),
+    read: procedure.input(idInput).query(async ({ input }) => store.readRead(await store.read(input.id))),
+    setRead: procedure.input(idInput.extend({ keys: z.array(z.string().min(1).max(5000)).max(5000), read: z.boolean() }))
+      .mutation(({ input }) => store.setRead(input.id, input.keys, input.read)),
+    // Code navigation: the word under the cursor across the repository, and whole files, at the head.
+    grep: procedure.input(idInput.extend({ word: z.string().trim().min(1).max(200) })).query(async ({ input }) => grep(await store.read(input.id), input.word)),
+    fileAt: procedure.input(idInput.extend({ file: z.string().min(1).max(4096) })).query(async ({ input }) => fileAt(await store.read(input.id), input.file)),
+    // Home: checkouts with an agent thread, and local branches.
+    home: procedure.input(scoped.optional()).query(async ({ input }) => {
+      const repo = checkoutRepo(input?.checkout);
+      let agents: ReturnType<typeof agentCheckouts> = [];
+      let agentError: string | null = null;
+      try { agents = agentCheckouts(await readShell(), repo); }
+      catch (error) { agentError = error instanceof Error ? error.message : String(error); }
+      return { repo, agents, agentError, branches: await branchRows(repo) };
+    }),
+    // Reading and agent progress of the latest review of each PR (url) or branch (repo and branch), null where none exists.
+    reviewProgress: procedure.input(z.object({ targets: z.array(z.union([z.object({ url: z.string().min(1) }), z.object({ repo: z.string().min(1), branch: z.string().min(1) })])).max(100) }))
+      .query(async ({ input }) => {
+        const latest = await latestSnapshots(store);
+        let shell: ReturnType<typeof readShell> | undefined;
+        const once = () => (shell ??= readShell());
+        return Promise.all(input.targets.map(async (target) => {
+          const source = "url" in target ? { kind: "github" as const, url: target.url } : { kind: "local" as const, url: "", repo: target.repo, branch: target.branch, baseBranch: "", branchReview: true };
+          const summary = latest.get(store.prDirectory({ source }));
+          if (!summary) return null;
+          const review = await store.read(summary.id);
+          return { ...(await readingProgress(store, review)), agent: await agentProgress(store, review, once) };
+        }));
+      }),
     openBranch: procedure.input(scoped.extend({ branch: z.string().min(1) })).mutation(async ({ input }) => {
       const fresh = await loadBranchReview(input.branch, store, checkoutRepo(input.checkout));
       return store.transaction(async () => {
@@ -311,18 +320,6 @@ export function createRouter(store: ReviewStore) {
           review.comments = review.comments.filter(
             (comment) => comment.id !== input.commentId,
           );
-        }),
-      ),
-    viewed: procedure
-      .input(idInput.extend({ file: z.string(), viewed: z.boolean() }))
-      .mutation(({ input }) =>
-        store.update(input.id, (review) => {
-          if (
-            !parseFiles(review.patch).some((file) => file.name === input.file)
-          )
-            throw new Error("Unknown file.");
-          review.viewed = review.viewed.filter((file) => file !== input.file);
-          if (input.viewed) review.viewed.push(input.file);
         }),
       ),
     export: procedure.input(idInput).query(async ({ input }) => {

@@ -175,7 +175,7 @@ export async function loadPullRequest(
     baseRevision: metadata.base.sha,
     patch,
     comments: [],
-    viewed: [],
+   
     updatedAt: new Date().toISOString(),
   };
 }

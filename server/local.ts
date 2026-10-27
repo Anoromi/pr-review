@@ -171,7 +171,7 @@ export async function loadLocalReview(
     baseRevision: mergeBase,
     patch,
     comments: [],
-    viewed: [],
+   
     updatedAt: new Date().toISOString(),
   };
   for (const file of files) {

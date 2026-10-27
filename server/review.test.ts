@@ -21,7 +21,7 @@ const fixture = (): Review => ({
   baseRevision: "base",
   patch,
   comments: [],
-  viewed: [],
+ 
   updatedAt: new Date().toISOString(),
 });
 
@@ -84,7 +84,7 @@ test("comments preserve old and new coordinates, persist, edit, delete, and upda
     );
   }));
 
-test("simultaneous writes retain both comments and viewed state", () =>
+test("simultaneous writes retain both comments and read state", () =>
   usingStore(async (store) => {
     const caller = createRouter(store).createCaller({});
     const id = fixture().id;
@@ -105,11 +105,11 @@ test("simultaneous writes retain both comments and viewed state", () =>
         end: 12,
         body: "Second",
       }),
-      caller.viewed({ id, file: "src/example.ts", viewed: true }),
+      caller.setRead({ id, keys: ["src/example.ts#x"], read: true }),
     ]);
     const saved = await store.read(id);
     assert.equal(saved.comments.length, 2);
-    assert.deepEqual(saved.viewed, ["src/example.ts"]);
+    assert.deepEqual(await caller.read({ id }), ["src/example.ts#x"]);
     assert.equal((await store.list())[0].commentCount, 2);
   }));
 

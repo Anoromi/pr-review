@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { matchThreads, runState, type ShellThread } from "./t3";
-import { awaitingReply } from "../shared/progress";
+import { awaitingReply, threadState } from "../shared/progress";
 import { followUpMessage } from "./router";
 import type { Comment, Review } from "../shared/types";
 
@@ -58,4 +58,16 @@ test("an asked comment awaits a reply from its question or the user's latest fol
   assert.equal(awaitingReply(comment([reply("Agent", "2"), reply("You", "3")])), "3");
   assert.equal(awaitingReply(comment([reply("Agent", "2"), reply("You", "3"), reply("Agent", "4")])), undefined);
   assert.equal(awaitingReply(comment([], { thread: undefined })), undefined);
+});
+
+test("a thread's state: new replies first, then resolved, then owed a reply (working or waiting), answered or open", () => {
+  const asked = { id: "1", file: "a", side: "additions" as const, start: 1, end: 1, code: "", body: "Why?", createdAt: "2026-01-01T00:00:00Z", thread: { id: "t", title: "T" } };
+  const answered = { ...asked, replies: [{ id: "r", commentId: "1", author: "Agent", body: "Because", createdAt: "2026-01-01T00:01:00Z" }] };
+  assert.equal(threadState(asked, "working", 0), "working");
+  assert.equal(threadState(asked, "requested", 0), "waiting");
+  assert.equal(threadState(asked, "finished", 0), "waiting");
+  assert.equal(threadState(answered, undefined, 1), "new");
+  assert.equal(threadState(answered, undefined, 0), "answered");
+  assert.equal(threadState({ ...answered, resolved: true }, undefined, 0), "resolved");
+  assert.equal(threadState({ ...asked, thread: undefined }, undefined, 0), "open");
 });

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { listBranches, listBranchAuthors, listBranchCommits, loadBranchCommit, loadBranchReview } from "./branches";
+import { listBranches, loadBranchCommit, loadBranchReview, loadCommit, ownCommits } from "./branches";
 import { ReviewStore } from "./store";
 const exec = promisify(execFile);
 
@@ -29,83 +29,10 @@ test("commit reviews share branch comments and preserve original snapshots, incl
     assert.equal(store.prDirectory(a), store.prDirectory(b));
     await git("branch", "other");
     assert.notEqual(store.prDirectory(await loadBranchCommit("other", second, store, repo)), store.prDirectory(a));
-    assert.deepEqual((await listBranchCommits("feature", 0, repo)).commits.map(x => x.sha), [second, first]);
     assert.equal((await listBranches(repo)).length, 2);
     await assert.rejects(loadBranchCommit("feature", "HEAD", store, repo));
   } finally { await rm(repo, { recursive: true, force: true }); }
 });
-
-test("author filters cover full history, deduplicate emails across names, match literal emails, and paginate filtered commits", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "branch-authors-"));
-  const git = async (...args: string[]) => (await exec("git", ["-C", repo, ...args])).stdout.trim();
-  try {
-    await git("init", "-b", "feature");
-    await git("config", "user.name", "Reviewer");
-    await git("config", "user.email", "reviewer@example.com");
-    const alice = "Alice (QA) <alice+qa@example.com>";
-    const bob = "Bob <bob@example.com>";
-    const aliceEmail = "alice+qa@example.com";
-    const bobEmail = "bob@example.com";
-    await git("commit", "--allow-empty", "--author", alice, "-m", "older Alice commit");
-    await git("commit", "--allow-empty", "--author", "Alice Alias <alice+qa@example.com>", "-m", "alias commit");
-    for (let i = 0; i < 101; i++)
-      await git("commit", "--allow-empty", "--author", bob, "-m", `Bob ${i}`);
-    assert.deepEqual(await listBranchAuthors("feature", repo), [aliceEmail, bobEmail]);
-    const filtered = await listBranchCommits("feature", 0, repo, aliceEmail);
-    assert.equal(filtered.commits.length, 2);
-    assert.equal(filtered.commits[1].subject, "older Alice commit");
-    assert.equal(filtered.commits[1].author, alice);
-    assert.equal(filtered.more, false);
-    const search = await listBranchCommits("feature", 0, repo, undefined, "OLDER ALICE");
-    assert.equal(search.commits.length, 1);
-    assert.equal(search.commits[0].subject, "older Alice commit");
-    assert.equal((await listBranchCommits("feature", 0, repo, bobEmail, "older Alice")).commits.length, 0);
-    assert.equal((await listBranchCommits("feature", 0, repo, undefined, search.commits[0].sha.slice(0, 12))).commits[0].sha, search.commits[0].sha);
-    assert.equal((await listBranchCommits("feature", 0, repo, undefined, ".*")).commits.length, 0);
-    assert.equal((await listBranchCommits("feature", 0, repo, bobEmail, "Bob")).more, true);
-    assert.equal((await listBranchCommits("feature", 100, repo, bobEmail, "Bob")).commits.length, 1);
-    assert.equal((await listBranchCommits("feature", 0, repo, bobEmail)).more, true);
-    const next = await listBranchCommits("feature", 100, repo, bobEmail);
-    assert.equal(next.commits.length, 1);
-    assert.equal(next.more, false);
-    assert.equal((await listBranchCommits("feature", 0, repo, ".*")).commits.length, 0);
-    assert.equal((await listBranchCommits("feature", 0, repo)).commits.length, 100);
-  } finally {
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
-
-test("merged branch commits appear in the list, search, and author filter without including unmerged branches", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "branch-merged-"));
-  const git = async (...args: string[]) => (await exec("git", ["-C", repo, ...args])).stdout.trim();
-  try {
-    await git("init", "-b", "main");
-    await git("config", "user.name", "Reviewer");
-    await git("config", "user.email", "reviewer@example.com");
-    await git("commit", "--allow-empty", "-m", "root");
-    await git("checkout", "-b", "topic");
-    await git("commit", "--allow-empty", "--author", "Contributor <contributor@example.com>", "-m", "merged feature");
-    const merged = await git("rev-parse", "HEAD");
-    await git("checkout", "main");
-    await git("merge", "--no-ff", "topic", "-m", "merge topic");
-    await git("checkout", "-b", "unmerged");
-    await git("commit", "--allow-empty", "--author", "Unmerged <unmerged@example.com>", "-m", "unmerged feature");
-    const unmerged = await git("rev-parse", "HEAD");
-    const commits = (await listBranchCommits("main", 0, repo)).commits;
-    assert.equal(commits.length, 3);
-    assert.ok(commits.some(commit => commit.sha === merged));
-    assert.ok(!commits.some(commit => commit.sha === unmerged));
-    assert.deepEqual(await listBranchAuthors("main", repo), ["contributor@example.com", "reviewer@example.com"]);
-    const filtered = await listBranchCommits("main", 0, repo, "contributor@example.com", "merged feature");
-    assert.deepEqual(filtered.commits.map(commit => commit.sha), [merged]);
-    const bySha = await listBranchCommits("main", 0, repo, undefined, merged.slice(0, 12));
-    assert.deepEqual(bySha.commits.map(commit => commit.sha), [merged]);
-  } finally {
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
 
 test("combined branch reviews use the main merge base, refresh snapshots, and share branch comments", async () => {
   const repo = await mkdtemp(join(tmpdir(), "branch-combined-"));
@@ -152,5 +79,36 @@ test("combined branch reviews use the main merge base, refresh snapshots, and sh
     assert.notEqual((await loadBranchReview("feature", store, repo)).id, remote.id);
     await assert.rejects(loadBranchReview("missing", store, repo));
     await assert.rejects(loadBranchReview("../bad", store, repo));
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
+test("a review's own commits stop at its base and skip merges; commit snapshots share its folder", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "branch-own-"));
+  const git = async (...args: string[]) => (await exec("git", ["-C", repo, ...args])).stdout.trim();
+  try {
+    await git("init", "-b", "main");
+    await git("config", "user.name", "Reviewer"); await git("config", "user.email", "reviewer@example.com");
+    await writeFile(join(repo, "a.txt"), "base\n"); await git("add", "."); await git("commit", "-m", "base");
+    await git("checkout", "-b", "feature");
+    await writeFile(join(repo, "a.txt"), "one\n"); await git("commit", "-am", "one");
+    const one = await git("rev-parse", "HEAD");
+    await git("checkout", "main");
+    await writeFile(join(repo, "b.txt"), "main\n"); await git("add", "."); await git("commit", "-m", "main advanced");
+    await git("checkout", "feature");
+    await git("merge", "--no-ff", "main", "-m", "merge main");
+    await writeFile(join(repo, "a.txt"), "two\n"); await git("commit", "-am", "two");
+    const two = await git("rev-parse", "HEAD");
+    const store = new ReviewStore(join(repo, "reviews"));
+    const branch = await store.save(await loadBranchReview("feature", store, repo));
+    assert.deepEqual((await ownCommits(branch)).map((commit) => [commit.sha, commit.subject]), [[one, "one"], [two, "two"]]);
+    const commit = await loadCommit(branch, one, store);
+    assert.equal(store.prDirectory(commit), store.prDirectory(branch));
+    assert.match(commit.patch, /-base\n\+one/);
+    // A PR's commit keeps the PR's source, so its comments stay with the PR.
+    const pull = { ...branch, id: "f".repeat(24), source: { kind: "local" as const, url: "https://github.com/o/r/pull/1", repo, branch: "feature", baseBranch: "main" } };
+    const pullCommit = await loadCommit(pull, two, store);
+    assert.equal(store.prDirectory(pullCommit), store.prDirectory(pull));
+    assert.equal(pullCommit.source.kind === "local" && pullCommit.source.commit, two);
+    await assert.rejects(loadCommit(branch, "0".repeat(40), store));
   } finally { await rm(repo, { recursive: true, force: true }); }
 });

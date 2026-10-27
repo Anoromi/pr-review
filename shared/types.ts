@@ -74,7 +74,6 @@ export interface Review {
   generatedFiles?: string[];
   github?: GitHubState;
   comments: Comment[];
-  viewed: string[];
   updatedAt: string;
 }
 
@@ -84,3 +83,8 @@ export type ReviewSummary = Pick<
 > & {
   commentCount: number;
 };
+
+/** The commit a snapshot shows on its own (a commit scope of its branch or PR), if it does. */
+export function commitOf(review: Pick<Review, "source">): string | undefined {
+  return review.source.kind === "local" && !review.source.branchComparison ? review.source.commit : undefined;
+}

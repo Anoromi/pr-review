@@ -28,7 +28,6 @@ const fixture = (): Review => ({
   baseRevision: "b".repeat(40),
   patch: `diff --git a/example.ts b/example.ts\nindex ${blob(oldText).slice(0, 12)}..${blob(newText).slice(0, 12)} 100644\n--- a/example.ts\n+++ b/example.ts\n@@ -10,3 +10,3 @@\n line 10\n-line 11\n+changed\n line 12\n`,
   comments: [],
-  viewed: [],
   updatedAt: new Date().toISOString(),
 });
 

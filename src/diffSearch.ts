@@ -1,9 +1,9 @@
 import type { FileDiffMetadata } from "@pierre/diffs";
 import type { DiffCursor } from "./diffCursor";
 
-export function searchDiffs(files: FileDiffMetadata[], query: string): DiffCursor[] {
+export function searchDiffs(files: FileDiffMetadata[], query: string): Array<DiffCursor & { text: string }> {
   if (!query) return [];
-  const matches: DiffCursor[] = [];
+  const matches: Array<DiffCursor & { text: string }> = [];
   for (const file of files) {
     for (const side of ["deletions", "additions"] as const) {
       const prefix = side === "additions" ? "addition" : "deletion";
@@ -15,7 +15,7 @@ export function searchDiffs(files: FileDiffMetadata[], query: string): DiffCurso
           seen.add(line);
           const text = file[`${prefix}Lines`][file.isPartial ? hunk[`${prefix}LineIndex`] + offset : line - 1] ?? "";
           for (let column = text.indexOf(query); column !== -1; column = text.indexOf(query, column + query.length))
-            matches.push({ id: file.name, side, line, column });
+            matches.push({ id: file.name, side, line, column, text: text.replace(/\r?\n$/, "") });
         }
       }
     }

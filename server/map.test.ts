@@ -29,6 +29,23 @@ test("every hunk lands in one chapter and leftovers in a final uncovered chapter
   assert.equal(resolveMap(map([chapter([{ file: "a.ts" }, { file: "b.ts" }, { file: "c.ts" }])]), files).length, 1);
 });
 
+test("notes anchor to diff lines on their side; notes on lines the diff lacks are listed, not dropped", () => {
+  const [resolved] = resolveMap(map([chapter([{ file: "a.ts" }], { notes: [
+    { file: "a.ts", start: 19, why: "Range in the new file" },
+    { file: "a.ts", side: "old", start: 2, end: 4, why: "Removed lines" },
+    { file: "a.ts", start: 2, end: 30, why: "Runs past the hunk" },
+    { file: "a.ts", side: "old", start: 30, why: "Not in the diff" },
+    { file: "gone.ts", start: 1, why: "No such file" },
+  ] })]), files);
+  assert.deepEqual(resolved.notes, [
+    { file: "a.ts", side: "additions", start: 19, end: 19, why: "Range in the new file" },
+    { file: "a.ts", side: "deletions", start: 2, end: 4, why: "Removed lines" },
+  ]);
+  assert.deepEqual(resolved.badNotes.map((note) => note.why), ["Runs past the hunk", "Not in the diff", "No such file"]);
+  // Maps written before notes still load.
+  assert.deepEqual(resolveMap(map([chapter([{ file: "a.ts" }])]), files)[0].notes, []);
+});
+
 test("moved code is verified only when removed and added lines match ignoring whitespace", () => {
   const moved = { skipSafe: { reason: "moved" } };
   const [move, changed, rest] = resolveMap(map([

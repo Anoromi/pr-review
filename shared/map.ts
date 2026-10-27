@@ -18,15 +18,31 @@ export const reviewMapSchema = z.object({
       oldStart: z.number().int().nonnegative().optional(),
       newStart: z.number().int().nonnegative().optional(),
     })).min(1),
+    // Why a line or range was written this way, shown under its last line.
+    // `side` is the new file (default) or the old one, for removed lines.
+    notes: z.array(z.object({
+      file: z.string().min(1),
+      side: z.enum(["new", "old"]).default("new"),
+      start: z.number().int().positive(),
+      end: z.number().int().positive().optional(),
+      why: z.string().trim().min(1),
+    })).default([]),
     skipSafe: z.object({ reason: z.enum(["moved", "generated", "formatting", "rename"]) }).optional(),
   })),
 });
 export type ReviewMap = z.infer<typeof reviewMapSchema>;
 export type HunkRef = ReviewMap["chapters"][number]["hunks"][number];
+type NoteRef = ReviewMap["chapters"][number]["notes"][number];
+/** A note on lines of the diff, in the reader's coordinates. */
+export type Note = { file: string; side: "additions" | "deletions"; start: number; end: number; why: string };
 
-export type Chapter = Omit<ReviewMap["chapters"][number], "hunks"> & {
+export type Chapter = Omit<ReviewMap["chapters"][number], "hunks" | "notes"> & {
   /** Hunks of this chapter as `hunkKey`s, in diff order. */
   hunks: string[];
+  /** Notes whose lines are all in the diff. */
+  notes: Note[];
+  /** Notes naming lines the diff does not show (another file, side or line). */
+  badNotes: NoteRef[];
   /** References that name no hunk of this diff (or one an earlier chapter took). */
   missing: HunkRef[];
   /** Set for the chapter that collects hunks no chapter names. */
@@ -64,8 +80,12 @@ export function resolveMap(map: ReviewMap, files: FileDiffMetadata[]): Chapter[]
       for (const key of keys) if (!owner.has(key)) owner.set(key, index);
     }
   });
-  const chapters: Chapter[] = map.chapters.map((chapter, index) => ({ ...chapter, hunks: [], missing: missing[index] }));
-  const uncovered: Chapter = { title: "", why: "", risk: "high", check: [], hunks: [], missing: [], uncovered: true };
+  const chapters: Chapter[] = map.chapters.map((chapter, index) => {
+    const notes = chapter.notes.map((ref) => ({ ref, note: { file: ref.file, side: ref.side === "old" ? "deletions" as const : "additions" as const, start: ref.start, end: Math.max(ref.start, ref.end ?? ref.start), why: ref.why } }));
+    const shown = notes.filter(({ note }) => inDiff(files, note));
+    return { ...chapter, hunks: [], notes: shown.map(({ note }) => note), badNotes: notes.filter((item) => !shown.includes(item)).map(({ ref }) => ref), missing: missing[index] };
+  });
+  const uncovered: Chapter = { title: "", why: "", risk: "high", check: [], hunks: [], notes: [], badNotes: [], missing: [], uncovered: true };
   for (const file of files) {
     const keys = file.hunks.length ? file.hunks.map((_, hunk) => hunkKey(file.name, hunk)) : [hunkKey(file.name, -1)];
     for (const key of keys) {
@@ -76,6 +96,14 @@ export function resolveMap(map: ReviewMap, files: FileDiffMetadata[]): Chapter[]
   for (const chapter of chapters)
     if (chapter.skipSafe?.reason === "moved") chapter.verified = isMove(files, chapter.hunks);
   return uncovered.hunks.length ? [...chapters, uncovered] : chapters;
+}
+
+/** Whether every line of `note` is a line of one hunk of its file, on its side. */
+function inDiff(files: FileDiffMetadata[], note: Note) {
+  const file = files.find((file) => file.name === note.file);
+  const prefix = note.side === "additions" ? "addition" : "deletion";
+  return Boolean(file?.hunks.some((hunk) =>
+    note.start >= hunk[`${prefix}Start`] && note.end < hunk[`${prefix}Start`] + hunk[`${prefix}Count`]));
 }
 
 /**

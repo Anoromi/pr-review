@@ -47,7 +47,7 @@ export class ReviewStore {
     await rename(temporary, join(directory, "github.json"));
   }
 
-  prDirectory(review: Review) {
+  prDirectory(review: Pick<Review, "source">) {
     if (review.source.kind === "local" && review.source.branchReview) {
       const key = createHash("sha256").update(JSON.stringify([review.source.repo, review.source.branch])).digest("hex").slice(0, 24);
       return join(this.root, "branches", key);
@@ -77,6 +77,30 @@ export class ReviewStore {
       await writeFile(temporary, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
       await rename(temporary, join(directory, "resolved.json"));
       return this.read(id);
+    });
+  }
+
+  /** Read hunk ids and ticked check items of the review's branch or PR (see shared/read.ts). */
+  async readRead(review: Review): Promise<string[]> {
+    try {
+      return z.array(z.string()).parse(JSON.parse(await readFile(join(this.prDirectory(review), "read.json"), "utf8")));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw new Error("Cannot read read.json: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  async setRead(id: string, keys: string[], read: boolean) {
+    return this.transaction(async () => {
+      const review = await this.read(id);
+      const state = new Set(await this.readRead(review));
+      for (const key of keys) if (read) state.add(key); else state.delete(key);
+      const directory = this.prDirectory(review);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const temporary = join(directory, `.${randomUUID()}.tmp`);
+      await writeFile(temporary, JSON.stringify([...state]) + "\n", { mode: 0o600 });
+      await rename(temporary, join(directory, "read.json"));
+      return [...state];
     });
   }
 
