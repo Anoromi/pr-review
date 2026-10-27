@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
-import { Link } from "lucide-react";
+import { GitBranch, Link } from "lucide-react";
+import { toast } from "sonner";
+import { api, scope } from "./api";
 import {
   CommandDialog,
   CommandEmpty,
@@ -13,22 +15,26 @@ import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { Keys } from "./components/ui/key-hint";
 import { activeCommands, commandGroups, keysFor, type Command } from "./keys";
 
-export type PalettePage = "commands" | "url";
+export type PalettePage = "commands" | "url" | "branches";
 
 const pullUrl = /github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/;
 
-export function CommandPalette({ page, onClose, onOpenUrl }: {
+export function CommandPalette({ page, onClose, onOpenUrl, onOpenBranch }: {
   page: PalettePage | null;
   onClose: () => void;
   onOpenUrl: (url: string) => void;
+  /** Opens a local branch as a whole. */
+  onOpenBranch: (branch: string) => void;
 }) {
   const t = useTranslations("keys");
   const [query, setQuery] = useState("");
   const [commands, setCommands] = useState<Command[]>([]);
+  const [branches, setBranches] = useState<string[]>([]);
   useEffect(() => {
     if (!page) return;
     setQuery("");
     setCommands(activeCommands().filter((command) => !command.hidden));
+    if (page === "branches") api.branches.query(scope()).then(setBranches).catch((error) => toast.error(error instanceof Error ? error.message : String(error)));
   }, [page]);
   function run(action: () => void) {
     onClose();
@@ -48,11 +54,21 @@ export function CommandPalette({ page, onClose, onOpenUrl }: {
       <CommandInput
         value={query}
         onValueChange={setQuery}
-        placeholder={t(page === "url" ? "urlPlaceholder" : "palettePlaceholder")}
+        placeholder={t(page === "url" ? "urlPlaceholder" : page === "branches" ? "branchPlaceholder" : "palettePlaceholder")}
         spellCheck={false}
       />
       <CommandList className="max-h-[min(420px,55vh)]">
         {page !== "url" && <CommandEmpty>{t("noCommands")}</CommandEmpty>}
+        {page === "branches" && (
+          <CommandGroup heading={t("branchesHeading")}>
+            {branches.map((branch) => (
+              <CommandItem key={branch} value={branch} onSelect={() => run(() => onOpenBranch(branch))}>
+                <GitBranch />
+                <span className="truncate font-mono text-xs">{branch}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
         {(page === "url" ? url : pullUrl.test(url)) && (
           <CommandGroup>
             <CommandItem value={url} onSelect={() => run(() => onOpenUrl(url))}>

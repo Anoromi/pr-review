@@ -178,10 +178,10 @@ export function ReplyComposer({ comment, review, change, requested = false, onOp
   }
   if (!open) return (
     <div className="flex items-center gap-1">
-    <HotkeyButton size="xs" hotkey={hotkey} showHotkey={showHotkey} data-reply-action disabled={Boolean(comment.github?.deleted) || (comment.destination === "github" && !comment.github)} onClick={() => setOpen(true)}>
+    <HotkeyButton size="xs" hotkey={hotkey} showHotkey={showHotkey} disabled={Boolean(comment.github?.deleted) || (comment.destination === "github" && !comment.github)} onClick={() => setOpen(true)}>
       {t("reply")}
     </HotkeyButton>
-    <HotkeyButton size="xs" hotkey="x" showHotkey={showHotkey} data-resolve-action disabled={sending || Boolean(comment.github && !comment.github.canResolve)} onClick={async () => {
+    <HotkeyButton size="xs" hotkey="x" showHotkey={showHotkey} disabled={sending || Boolean(comment.github && !comment.github.canResolve)} onClick={async () => {
       if (pending.current) return;
       pending.current = true;
       setSending(true);

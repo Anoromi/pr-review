@@ -17,11 +17,14 @@ export function scope(): { checkout?: string } {
   const checkout = currentCheckout();
   return checkout ? { checkout } : {};
 }
-/** Set or clear the `review` parameter, keeping `checkout` and the rest. */
-export function setReviewParam(id: string | undefined) {
+function setParam(name: string, value: string | undefined) {
   const params = new URLSearchParams(location.search);
-  if (id) params.set("review", id);
-  else params.delete("review");
+  if (value) params.set(name, value);
+  else params.delete(name);
   const query = params.toString();
   history.replaceState(null, "", query ? `?${query}` : location.pathname);
 }
+/** Set or clear the `review` parameter, keeping `checkout` and the rest. */
+export const setReviewParam = (id: string | undefined) => setParam("review", id);
+/** Set or clear the `commit` parameter: the commit the review is scoped to. */
+export const setCommitParam = (commit: string | undefined) => setParam("commit", commit);

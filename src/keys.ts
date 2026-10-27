@@ -5,6 +5,9 @@ export type CommandGroup =
   | "list"
   | "move"
   | "jump"
+  | "scope"
+  | "rail"
+  | "panel"
   | "files"
   | "comments"
   | "select"
@@ -14,11 +17,14 @@ export type CommandGroup =
 export const commandGroups: CommandGroup[] = [
   "move",
   "jump",
+  "scope",
   "files",
   "comments",
   "select",
   "view",
   "review",
+  "rail",
+  "panel",
   "list",
   "app",
 ];
