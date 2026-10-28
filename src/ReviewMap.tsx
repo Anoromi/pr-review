@@ -106,6 +106,12 @@ export function Brief({ chapter, index, checked, hunks, onCheck }: {
           ))}
         </ul>
       )}
+      {chapter.notDone.length > 0 && (
+        <div className="mt-1.5 text-xs">
+          <b className="text-removed">{t("notDone")}</b>
+          <ul className="ml-4 list-disc">{chapter.notDone.map((item, position) => <li key={position}><Markdown text={item} /></li>)}</ul>
+        </div>
+      )}
       {chapter.badNotes.length > 0 && (
         <p className="mt-1 text-xs text-removed" role="alert">{t("badNotes", { count: chapter.badNotes.length, notes: chapter.badNotes.map((note) => `${note.file}:${note.start}${note.end && note.end !== note.start ? `-${note.end}` : ""}${note.side === "old" ? ` (${t("old")})` : ""}`).join(", ") })}</p>
       )}

@@ -7,13 +7,16 @@ import { resolveMap, reviewMapSchema, type ReviewMap } from "../shared/map";
 import { hunkIds } from "../shared/read";
 import { awaitingReply } from "../shared/progress";
 import { currentBranch } from "./repository";
-import { runState, type Shell, type ShellThread } from "./t3";
+import { latestTurn, runState, type Shell, type ShellThread } from "./t3";
 import type { ReviewStore } from "./store";
 import { z } from "zod";
 
-/** map.json of the review's branch or PR, or null; an invalid file throws with its errors. */
-export async function readMap(store: ReviewStore, review: Pick<Review, "source">): Promise<ReviewMap | null> {
-  const file = join(store.prDirectory(review), "map.json");
+/**
+ * map.json of the review's branch or PR (or of another `directory`, such as
+ * a thread's changes), or null; an invalid file throws with its errors.
+ */
+export async function readMap(store: ReviewStore, review: Pick<Review, "source">, directory = store.prDirectory(review)): Promise<ReviewMap | null> {
+  const file = join(directory, "map.json");
   let text: string;
   try { text = await readFile(file, "utf8"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
@@ -31,8 +34,7 @@ type Job = { threadId: string; title: string; requestedAt: string; revision?: st
  * head it was asked for, when the request recorded it. A map written without
  * a request has no recorded diff and counts as current.
  */
-export async function mapOutdated(store: ReviewStore, review: Review): Promise<{ revision: string | null } | null> {
-  const directory = store.prDirectory(review);
+export async function mapOutdated(store: ReviewStore, review: Review, directory = store.prDirectory(review)): Promise<{ revision: string | null } | null> {
   let diff: string;
   try { diff = await readFile(join(directory, "map-diff.patch"), "utf8"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
@@ -43,27 +45,33 @@ export async function mapOutdated(store: ReviewStore, review: Review): Promise<{
   return { revision: job?.revision ?? null };
 }
 
-/**
- * What the agent threads are doing with what was sent to them: the last map
- * request (ready once map.json changed after it) and the questions still
- * owed a reply. T3 Code is only asked (`shell`) while something is pending.
- */
-export async function agentProgress(store: ReviewStore, review: Review, shell: () => Promise<Shell>) {
-  const directory = store.prDirectory(review);
+/** The last map request in `directory` and when map.json last changed; the map is ready once it changed after the request. */
+async function mapJob(directory: string) {
   let job: Job | null = null;
   try { job = JSON.parse(await readFile(join(directory, "map-request.json"), "utf8")); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  let mapChanged = 0;
-  try { mapChanged = (await stat(join(directory, "map.json"))).mtimeMs; }
+  let changed = 0;
+  try { changed = (await stat(join(directory, "map.json"))).mtimeMs; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const mapReady = job !== null && mapChanged > Date.parse(job.requestedAt);
+  return { job, changed, ready: job !== null && changed > Date.parse(job.requestedAt) };
+}
+
+/**
+ * What the agent threads are doing with what was sent to them: the last map
+ * request (and the last one for a thread's changes in `changesDirectory`)
+ * and the questions still owed a reply. T3 Code is only asked (`shell`)
+ * while something is pending.
+ */
+export async function agentProgress(store: ReviewStore, review: Review, shell: () => Promise<Shell>, changesDirectory?: string) {
+  const { job, changed: mapChanged, ready: mapReady } = await mapJob(store.prDirectory(review));
+  const changes = changesDirectory ? await mapJob(changesDirectory) : null;
   const waiting = review.comments.flatMap((comment) => {
     const since = awaitingReply(comment);
     return since ? [{ id: comment.id, threadId: comment.thread!.id, since }] : [];
   });
   let threads = new Map<string, ShellThread>();
   let error: string | null = null;
-  if ((job && !mapReady) || waiting.length) {
+  if ((job && !mapReady) || (changes?.job && !changes.ready) || waiting.length) {
     try { threads = new Map((await shell()).threads.map((thread) => [thread.id, thread])); }
     catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
   }
@@ -73,14 +81,15 @@ export async function agentProgress(store: ReviewStore, review: Review, shell: (
     error,
     mapChanged: mapChanged ? new Date(mapChanged).toISOString() : null,
     map: job && { title: job.title, requestedAt: job.requestedAt, state: mapReady ? "ready" as const : state(job.threadId, job.requestedAt) },
+    changesMap: changes?.job ? { title: changes.job.title, requestedAt: changes.job.requestedAt, state: changes.ready ? "ready" as const : state(changes.job.threadId, changes.job.requestedAt) } : null,
     replies: Object.fromEntries(waiting.map((item) => [item.id, state(item.threadId, item.since)])),
   };
 }
 
 const commitScope = (summary: Pick<ReviewSummary, "source">) =>
-  summary.source.kind === "local" && Boolean(summary.source.commit) && !summary.source.branchComparison;
+  summary.source.kind === "local" && (Boolean(summary.source.commit) && !summary.source.branchComparison || Boolean(summary.source.changes));
 
-/** The latest whole-branch or PR snapshot of each conversation folder. */
+/** The latest whole-branch or PR snapshot of each conversation folder (not a commit's or a thread's changes). */
 export async function latestSnapshots(store: ReviewStore) {
   const latest = new Map<string, ReviewSummary>();
   for (const summary of await store.list())
@@ -128,7 +137,7 @@ export function agentCheckouts(shell: Shell, repo: string, limit = 12) {
   const wanted = commonDir(repo);
   const projects = new Map(shell.projects.filter((project) => commonDir(project.workspaceRoot) === wanted).map((project) => [project.id, project.workspaceRoot]));
   const seen = new Set<string>();
-  const rows: Array<{ checkout: string; branch: string; title: string; working: boolean; updatedAt: string }> = [];
+  const rows: Array<{ checkout: string; branch: string; threadId: string; title: string; working: boolean; latestTurn: number; updatedAt: string }> = [];
   const threads = shell.threads
     .filter((thread) => !thread.archivedAt && !thread.deletedAt && projects.has(thread.projectId))
     .map((thread) => ({ thread, at: [thread.latestUserMessageAt, thread.latestRunStartedAt, thread.latestRunCompletedAt, thread.updatedAt].filter(Boolean).sort().at(-1)! }))
@@ -138,7 +147,7 @@ export function agentCheckouts(shell: Shell, repo: string, limit = 12) {
     if (seen.has(checkout) || rows.length >= limit) continue;
     seen.add(checkout);
     const branch = currentBranch(checkout);
-    if (branch) rows.push({ checkout, branch, title: thread.title, working: Boolean(thread.activeRunId), updatedAt: at });
+    if (branch) rows.push({ checkout, branch, threadId: thread.id, title: thread.title, working: Boolean(thread.activeRunId), latestTurn: latestTurn(thread), updatedAt: at });
   }
   return rows;
 }

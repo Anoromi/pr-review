@@ -12,6 +12,7 @@ import {
 import { Keys } from "./components/ui/key-hint";
 import type { DiffCursor } from "./diffCursor";
 import { createStore, pendingKeys, useStore } from "./keys";
+import type { api } from "./api";
 
 /** Kept outside React state so moving the cursor repaints only the status line. */
 export const cursorPosition = createStore<DiffCursor | null>(null);
@@ -127,7 +128,7 @@ export function FilePicker({ open, onOpenChange, files, read: seen, comments, on
   );
 }
 
-export type AgentThread = { id: string; title: string; updatedAt: string };
+export type AgentThread = Awaited<ReturnType<typeof api.threads.query>>[number];
 
 /** Picks the T3 Code thread that questions go to. */
 export function ThreadPicker({ open, onOpenChange, threads, current, error, onPick }: {

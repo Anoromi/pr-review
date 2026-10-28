@@ -38,6 +38,16 @@ async function mainRef(repo: string) {
   return remoteMain || await branchRef(repo, "main");
 }
 
+/** What the review's branch is based on, as it is now: main for a branch, the base branch for a PR. */
+export async function upstreamRef(review: Review) {
+  if (review.source.kind !== "local") throw new Error("Only reviews of a local checkout have an upstream.");
+  if (review.source.branchReview) return mainRef(review.source.repo);
+  const number = /\/pull\/(\d+)/.exec(review.source.url)?.[1];
+  for (const ref of [`refs/pr-review/${number}/base`, `refs/heads/${review.source.baseBranch}`])
+    if (await git(review.source.repo, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`).then(() => true, () => false)) return ref;
+  throw new Error(`The PR's base branch ${review.source.baseBranch} is not in the local repository.`);
+}
+
 /**
  * The review's own commits, oldest first: first-parent history from its base
  * to its head, without merges (a merge's diff would bring in the base's changes).
@@ -120,8 +130,9 @@ async function loadBranchSnapshot(repo: string, branch: string, commit: string, 
   return loadSnapshot(repo, id, title, source, commit, base, store);
 }
 
-async function loadSnapshot(repo: string, id: string, title: string, source: Review["source"], commit: string, base: string, store: ReviewStore): Promise<Review> {
-  const patch = await git(repo, ...diffArgs, base, commit, "--");
+/** A snapshot of `base` (a commit or tree) to `commit`, with the context to expand its hunks; `patch` when already diffed. */
+export async function loadSnapshot(repo: string, id: string, title: string, source: Review["source"], commit: string, base: string, store: ReviewStore, patch?: string): Promise<Review> {
+  patch ??= await git(repo, ...diffArgs, base, commit, "--");
   const review: Review = { id, title, source, revision: commit, baseRevision: base, patch, comments: [], updatedAt: new Date().toISOString() };
   for (const file of parseFiles(patch)) {
     if (!file.hunks.length || !["change", "rename-changed", "rename-pure"].includes(file.type)) continue;

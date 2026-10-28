@@ -42,6 +42,8 @@ export function App() {
   const [review, setReview] = useState<Review>();
   // The commit a review opens scoped to (?commit=, or an old commit snapshot's URL).
   const [initialCommit, setInitialCommit] = useState(() => new URLSearchParams(location.search).get("commit") ?? undefined);
+  // The thread whose changes since the user last looked a review opens on (`g n` on Home).
+  const [initialChanges, setInitialChanges] = useState<{ threadId: string }>();
   const [stackPulls, setStackPulls] = useState<MyPullRequest[]>([]);
   const [view, setView] = useState<"home" | "review">(() => {
     const params = new URLSearchParams(location.search);
@@ -126,7 +128,7 @@ export function App() {
   }, [review?.id, saving, busy]);
 
   /** Runs an open; the newest request wins, and its review is shown. */
-  async function load(operation: () => Promise<Review>, commit?: string) {
+  async function load(operation: () => Promise<Review>, commit?: string, changesOf?: string) {
     const request = ++sequence.current;
     setBusy(true);
     toast.dismiss("app-error");
@@ -135,6 +137,7 @@ export function App() {
       if (request !== sequence.current) return;
       if (review?.source.url === next.source.url && review.id !== next.id) toast.success(t("newRevision"));
       setInitialCommit(commit);
+      setInitialChanges(changesOf ? { threadId: changesOf } : undefined);
       setCommitParam(commit);
       setReview(next);
       setView("review");
@@ -144,17 +147,17 @@ export function App() {
       if (request === sequence.current) setBusy(false);
     }
   }
-  const openPull = (url: string, checkout?: string) =>
-    load(() => api.open.mutate({ ...(checkout ? { checkout } : scope()), url }));
+  const openPull = (url: string, checkout?: string, changesOf?: string) =>
+    load(() => api.open.mutate({ ...(checkout ? { checkout } : scope()), url }), undefined, changesOf);
   // A branch opens as a whole; its commits are a scope inside the review.
-  const openBranch = (branch: string, checkout?: string, commit?: string) =>
-    load(() => api.openBranch.mutate({ ...(checkout ? { checkout } : scope()), branch }), commit);
-  async function openCheckout(path: string) {
+  const openBranch = (branch: string, checkout?: string, commit?: string, changesOf?: string) =>
+    load(() => api.openBranch.mutate({ ...(checkout ? { checkout } : scope()), branch }), commit, changesOf);
+  async function openCheckout(path: string, changesOf?: string) {
     try {
       const target = await api.checkout.query({ path });
       if (target.pullError) toast.warning(t("checkoutPullUnknown", { branch: target.branch ?? "", error: target.pullError }), { id: "checkout-pull" });
-      if (target.pull) await openPull(target.pull.url, path);
-      else if (target.branch) await openBranch(target.branch, path);
+      if (target.pull) await openPull(target.pull.url, path, changesOf);
+      else if (target.branch) await openBranch(target.branch, path, undefined, changesOf);
       else { setView("home"); toast.error(t("checkoutDetached"), { id: "app-error" }); }
     } catch (error) { setView("home"); report(error); }
   }
@@ -276,7 +279,7 @@ export function App() {
       {view === "home" && (
         <Home key={homeSection.n} section={homeSection.section} busy={busy || saving} currentUrl={review?.source.url}
           onPulls={setStackPulls} onOpenPull={(url, checkout) => void openPull(url, checkout)}
-          onOpenBranch={(branch, checkout) => void openBranch(branch, checkout)} onOpenCheckout={(checkout) => void openCheckout(checkout)}
+          onOpenBranch={(branch, checkout) => void openBranch(branch, checkout)} onOpenCheckout={(checkout, changesOf) => void openCheckout(checkout, changesOf)}
           buttons={appButtons} />
       )}
       {view === "review" && (review ? (
@@ -288,6 +291,7 @@ export function App() {
             theme={theme}
             path={path}
             initialCommit={initialCommit}
+            initialChanges={initialChanges}
             onReload={reload}
             stack={currentStack.length > 1 ? { position: activeIndex - stackStart + 1, total: currentStack.length } : null}
             onStack={() => setStackOpen(true)}

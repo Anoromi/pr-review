@@ -48,6 +48,7 @@ import { Markdown } from "./Markdown";
 import { AgentPanel, Conversation, inboxOrder, threadTitle, threadTone, type InboxItem } from "./AgentPanel";
 import { GuideRail, CommitList, SearchList, railTabs, type CommitRow, type RailTab, type SearchRow } from "./GuideRail";
 import { AgentPill, Dot, agentStatus, elapsed, type Progress } from "./agentStatus";
+import { ChangesBrief, type Changes } from "./ChangesBrief";
 import type { Comment, Review } from "../shared/types";
 
 type Draft = Pick<Comment, "file" | "side" | "start" | "end" | "body"> & {
@@ -61,9 +62,11 @@ type Draft = Pick<Comment, "file" | "side" | "start" | "end" | "body"> & {
 type Annotation = { comments: Comment[]; notes: Note[] };
 /**
  * What the reader shows of the review: the whole branch, one chapter of the
- * map, or one commit (its own snapshot in the same conversation folder).
+ * map, one commit (its own snapshot in the same conversation folder), or
+ * the agent thread's changes since the user last looked (also a snapshot,
+ * with its own map: `chapter` is one of its chapters).
  */
-type Scope = { kind: "branch" } | { kind: "chapter"; index: number } | { kind: "commit"; sha: string };
+type Scope = { kind: "branch" } | { kind: "chapter"; index: number } | { kind: "commit"; sha: string } | { kind: "changes"; chapter: number | null };
 type Focus = "guide" | "reader" | "panel";
 type Props = {
   review: Review;
@@ -73,6 +76,8 @@ type Props = {
   path: string;
   /** The commit to open scoped to. */
   initialCommit?: string;
+  /** Opens on this thread's changes since the user last looked (`g n` on Home). */
+  initialChanges?: { threadId: string };
   /** Reopens the branch or PR at where it points now. */
   onReload: () => void;
   stack: { position: number; total: number } | null;
@@ -108,19 +113,25 @@ const basename = (file: string) => file.slice(file.lastIndexOf("/") + 1);
 const lineRange = (comment: Pick<Comment, "start" | "end">) => comment.start === comment.end ? `${comment.start}` : `${comment.start}–${comment.end}`;
 const lastActivity = (comment: Comment) => [comment.createdAt, ...(comment.replies ?? []).map((reply) => reply.createdAt)].sort().at(-1)!;
 
-export function Workspace({ review, change, saving, theme, path, initialCommit, onReload, stack, onStack, buttons }: Props) {
+export function Workspace({ review, change, saving, theme, path, initialCommit, initialChanges, onReload, stack, onStack, buttons }: Props) {
   const t = useTranslations("app");
   const format = useFormatter();
   const branchFiles = useMemo(() => reviewFiles(review), [review.id, review.patch]);
 
   // Scope: the whole branch, one chapter or one commit.
-  const [scope, setScopeState] = useState<Scope>(initialCommit ? { kind: "commit", sha: initialCommit } : { kind: "branch" });
+  const [scope, setScopeState] = useState<Scope>(initialChanges ? { kind: "changes", chapter: null } : initialCommit ? { kind: "commit", sha: initialCommit } : { kind: "branch" });
   const [commitReview, setCommitReview] = useState<Review>();
   const commitLoading = scope.kind === "commit" && !(commitReview?.source.kind === "local" && commitReview.source.commit === scope.sha);
   const scopedCommit = scope.kind === "commit" && !commitLoading ? commitReview : undefined;
+  // The agent thread's changes since the user last looked (see `openChanges`), loaded with their scope.
+  const [changes, setChanges] = useState<Changes | null>(null);
+  const [changesError, setChangesError] = useState("");
+  const inChanges = scope.kind === "changes";
+  const scopedChanges = inChanges ? changes?.review ?? undefined : undefined;
+  const scopedSnapshot = scopedCommit ?? scopedChanges;
   // The snapshot the reader shows; comments live in the shared folder, so the review's are its comments too.
-  const shown: Review = scopedCommit ? { ...scopedCommit, comments: review.comments, github: review.github } : review;
-  const shownFiles = useMemo(() => scopedCommit ? reviewFiles(scopedCommit) : branchFiles, [scopedCommit?.id, branchFiles]);
+  const shown: Review = scopedSnapshot ? { ...scopedSnapshot, comments: review.comments, github: review.github } : review;
+  const shownFiles = useMemo(() => scopedSnapshot ? reviewFiles(scopedSnapshot) : branchFiles, [scopedSnapshot?.id, branchFiles]);
   useEffect(() => {
     setCommitParam(scope.kind === "commit" ? scope.sha : undefined);
     if (scope.kind !== "commit" || (commitReview?.source.kind === "local" && commitReview.source.commit === scope.sha)) return;
@@ -131,22 +142,30 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     return () => { alive = false; };
   }, [scope.kind === "commit" ? scope.sha : null]);
 
-  // The review map (map.json, written by an agent): chapters of hunks in reading order.
-  const [reviewMap, setReviewMap] = useState<ReviewMap | null>(null);
-  // Set when the map was written for another diff (an older head): it still
-  // shows, and what it names that this diff lacks is listed in its chapters.
-  const [mapOutdated, setMapOutdated] = useState<{ revision: string | null } | null>(null);
+  // The review map (map.json, written by an agent): chapters of hunks in
+  // reading order. The scope's: the branch's, or in the changes scope the
+  // map of those changes to what the user asked.
+  const mapReview = inChanges ? scopedChanges : review;
+  const mapFiles = inChanges ? shownFiles : branchFiles;
+  // `outdated` is set when the map was written for another diff (an older
+  // head): it still shows, and what it names that this diff lacks is listed in its chapters.
+  const [mapData, setMapData] = useState<{ id: string; map: ReviewMap | null; outdated: { revision: string | null } | null } | null>(null);
+  const reviewMap = mapData && mapData.id === mapReview?.id ? mapData.map : null;
+  const mapOutdated = mapData && mapData.id === mapReview?.id ? mapData.outdated : null;
   const [mapError, setMapError] = useState("");
   const [mapLoaded, setMapLoaded] = useState(false);
   useEffect(() => {
+    setMapError("");
+    const id = mapReview?.id;
+    if (!id) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     let last = "";
     async function poll() {
       try {
-        const next = await api.map.query({ id: review.id });
+        const next = await api.map.query({ id: id! });
         const text = JSON.stringify(next);
-        if (!stopped && text !== last) { last = text; setReviewMap(next.map); setMapOutdated(next.outdated); }
+        if (!stopped && text !== last) { last = text; setMapData({ id: id!, ...next }); }
         if (!stopped) { setMapError(""); setMapLoaded(true); }
       } catch (error) {
         if (!stopped) { setMapError(error instanceof Error ? error.message : t("error")); setMapLoaded(true); }
@@ -155,18 +174,22 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     }
     void poll();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [review.id]);
-  const chapters = useMemo(() => reviewMap ? resolveMap(reviewMap, branchFiles) : [], [reviewMap, branchFiles]);
+  }, [mapReview?.id]);
+  const chapters = useMemo(() => reviewMap ? resolveMap(reviewMap, mapFiles) : [], [reviewMap, mapFiles]);
   const chapterOfHunk = useMemo(() => new Map(chapters.flatMap((chapter, index) => chapter.hunks.map((key) => [key, index] as const))), [chapters]);
-  const shownChapter = scope.kind === "chapter" && scope.index < chapters.length ? scope.index : null;
+  const scopeChapter = scope.kind === "chapter" ? scope.index : scope.kind === "changes" ? scope.chapter : null;
+  const shownChapter = scopeChapter !== null && scopeChapter < chapters.length ? scopeChapter : null;
   // The map's notes on lines of the branch diff.
   const notes = useMemo(() => chapters.flatMap((chapter) => chapter.notes), [chapters]);
 
   // What the agent threads are doing with the last map request and the
   // questions still owed a reply (see the `progress` query), while the tab is visible.
   const [progress, setProgress] = useState<Progress | null>(null);
+  // Once a thread's changes are loaded, their map request is followed too.
+  const changesOf = useRef<string | undefined>(undefined);
+  changesOf.current = changes?.threadId;
   function refreshProgress() {
-    return api.progress.query({ id: review.id }).then((next) => { setProgress(next); toast.dismiss("progress"); })
+    return api.progress.query({ id: review.id, changesOf: changesOf.current }).then((next) => { setProgress(next); toast.dismiss("progress"); })
       .catch((error) => toast.error(error instanceof Error ? error.message : t("error"), { id: "progress" }));
   }
   useEffect(() => {
@@ -180,14 +203,15 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     return () => { stopped = true; clearTimeout(timer); };
   }, [review.id]);
   // "Map ready" stays in the pill until the map is opened; which request
-  // that was is remembered per review.
-  const mapSeenKey = `pr-review:map-seen:${review.source.url}`;
-  const [mapSeen, setMapSeen] = useState(() => stored(mapSeenKey, ""));
-  const mapJob = progress?.map ?? null;
+  // that was is remembered per review (and per thread for its changes).
+  const mapSeenKey = inChanges && changes ? `pr-review:map-seen:changes:${changes.threadId}` : `pr-review:map-seen:${review.source.url}`;
+  const [mapSeenByKey, setMapSeenByKey] = useState<Record<string, string>>({});
+  const mapSeen = mapSeenByKey[mapSeenKey] ?? stored(mapSeenKey, "");
+  const mapJob = (inChanges ? progress?.changesMap : progress?.map) ?? null;
   const mapPending = mapJob?.state === "requested" || mapJob?.state === "working";
   function dismissMapJob() {
     if (!mapJob || mapPending) return;
-    setMapSeen(mapJob.requestedAt);
+    setMapSeenByKey((old) => ({ ...old, [mapSeenKey]: mapJob.requestedAt }));
     store(mapSeenKey, mapJob.requestedAt);
   }
   useEffect(() => { if (shownChapter !== null) dismissMapJob(); }, [shownChapter !== null, mapJob?.state]);
@@ -213,8 +237,10 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     catch (error) { toast.error(error instanceof Error ? error.message : t("error"), { id: "workspace" }); }
   }
   const branchIds = useMemo(() => hunkIds(branchFiles), [branchFiles]);
-  const shownIds = useMemo(() => scopedCommit ? hunkIds(shownFiles) : branchIds, [shownFiles, branchIds]);
-  const chapterIds = (index: number) => chapters[index].hunks.map((key) => branchIds.get(key)!);
+  const shownIds = useMemo(() => scopedSnapshot ? hunkIds(shownFiles) : branchIds, [shownFiles, branchIds]);
+  // Ids of the hunks the scope's map is about.
+  const mapIds = inChanges ? shownIds : branchIds;
+  const chapterIds = (index: number) => chapters[index].hunks.map((key) => mapIds.get(key)!);
   const chapterRead = (index: number) => chapterIds(index).every((id) => read.has(id));
   const fileIds = (name: string) => [...shownIds].filter(([key]) => key.slice(0, key.lastIndexOf("#")) === name).map(([, id]) => id);
   const readFiles = useMemo(() => new Set(shownFiles.filter((file) => fileIds(file.name).every((id) => read.has(id))).map((file) => file.name)), [shownFiles, shownIds, read]);
@@ -249,16 +275,16 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   const files = useMemo(() => {
     partialFiles.current = new Set();
     if (wholeFile) return shownFiles.filter((file) => file.name === wholeFile.file && !wholeFile.contents);
-    if (commitLoading) return [];
-    if (shownChapter === null) return shownFiles;
+    if (commitLoading || (inChanges && !scopedChanges)) return [];
+    if (shownChapter === null || !mapReview) return shownFiles;
     const keys = chapters[shownChapter].hunks;
-    const cut = parseFiles(chapterPatch(review.patch, branchFiles, new Set(keys)));
+    const cut = parseFiles(chapterPatch(mapReview.patch, mapFiles, new Set(keys)));
     cut.forEach((file, index) => {
-      file.cacheKey = `${review.id}:chapter${shownChapter}:${index}`;
-      if (file.hunks.length < (branchFiles.find((full) => full.name === file.name)?.hunks.length ?? 0)) partialFiles.current.add(file.name);
+      file.cacheKey = `${mapReview.id}:chapter${shownChapter}:${index}`;
+      if (file.hunks.length < (mapFiles.find((full) => full.name === file.name)?.hunks.length ?? 0)) partialFiles.current.add(file.name);
     });
     return cut;
-  }, [shownFiles, branchFiles, chapters, shownChapter, commitLoading, wholeFile?.file, wholeFile?.contents]);
+  }, [shownFiles, mapFiles, chapters, shownChapter, commitLoading, inChanges, scopedChanges?.id, wholeFile?.file, wholeFile?.contents]);
   // The repository's file filters: matching files stay in the review but
   // start collapsed, like generated files (see the effect below).
   const filterScope = review.source.kind === "local" ? { checkout: review.source.repo } : {};
@@ -288,7 +314,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   useEffect(() => {
     if (files.length && !files.some((file) => file.name === active)) setActive(files[0].name);
   }, [files]);
-  useEffect(() => { if (scopedCommit) setCollapsedFiles((old) => new Set([...old, ...(scopedCommit.generatedFiles ?? [])])); }, [scopedCommit?.id]);
+  useEffect(() => { if (scopedSnapshot) setCollapsedFiles((old) => new Set([...old, ...(scopedSnapshot.generatedFiles ?? [])])); }, [scopedSnapshot?.id]);
   // Filters arrive after the first render and can be edited: collapse what
   // newly matches, and reopen what an earlier set collapsed but this one
   // no longer does. Files the reader toggled since keep their state.
@@ -315,7 +341,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   // T3 Code threads working in this checkout, most recently active first;
   // questions (`a`, `A`) and map requests go to the chosen one.
   const [threads, setThreads] = useState<AgentThread[]>([]);
-  const [threadId, setThreadId] = useState<string>();
+  const [threadId, setThreadId] = useState<string | undefined>(initialChanges?.threadId);
   const [threadsError, setThreadsError] = useState("");
   const [threadPicker, setThreadPicker] = useState(false);
   const thread = threads.find((item) => item.id === threadId) ?? threads[0];
@@ -325,6 +351,39 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
       .catch((error) => setThreadsError(error instanceof Error ? error.message : t("error")));
   }
   useEffect(loadThreads, [review.id]);
+  // The changes scope: the thread's turns since the user last looked. `g n`
+  // enters it, or reloads it there; a thread picked with `gA` loads its own.
+  function loadChanges(id: string) {
+    setChangesError("");
+    api.openChanges.mutate({ id: review.id, threadId: id })
+      .then((next) => { setChanges({ ...next, threadId: id }); void refreshProgress(); })
+      .catch((error) => setChangesError(error instanceof Error ? error.message : t("error")));
+  }
+  function openChanges() {
+    if (!thread) return void setChangesError(threadsError || t("noAgentThread"));
+    cursor.current = null;
+    cursorPosition.set(null);
+    setScope({ kind: "changes", chapter: null });
+    loadChanges(thread.id);
+  }
+  useEffect(() => { if (inChanges && thread && changes?.threadId !== thread.id) loadChanges(thread.id); }, [inChanges, thread?.id]);
+  useEffect(() => {
+    if (!initialChanges) return;
+    setThreadId(initialChanges.threadId);
+    setScope({ kind: "changes", chapter: null });
+    if (changes?.threadId === initialChanges.threadId) loadChanges(initialChanges.threadId);
+  }, [initialChanges]);
+  async function markChangesReviewed() {
+    const range = scopedChanges?.source.kind === "local" ? scopedChanges.source.changes : undefined;
+    if (!changes || !range) return;
+    try {
+      await api.markChangesReviewed.mutate({ threadId: changes.threadId, turn: range.to });
+      toast.success(t("changes.marked", { turn: range.to }), { id: "workspace" });
+      setDone(false);
+      loadThreads();
+      loadChanges(changes.threadId);
+    } catch (error) { toast.error(error instanceof Error ? error.message : t("error"), { id: "workspace" }); }
+  }
   function agentThread() {
     if (thread) return thread;
     toast.error(threadsError || t("noAgentThread"), { id: "workspace" });
@@ -351,7 +410,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   const shownInline = (comment: Comment) =>
     !comment.github
       ? !comment.snapshotId || comment.snapshotId === shown.id
-      : !scopedCommit && !comment.github.outdated && !comment.github.deleted && review.github?.head === review.revision;
+      : !scopedSnapshot && !comment.github.outdated && !comment.github.deleted && review.github?.head === review.revision;
   const [nearbyReply, setNearbyReply] = useState<string | null>(null);
   function nearbyThread(position: DiffCursor | null) {
     if (!position) return undefined;
@@ -757,8 +816,8 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
         return [{ id: wholeFile.file, type: "file", file: { name: wholeFile.file, contents: wholeFile.contents } }];
       return files.map((file) => {
         const comments = review.comments.filter((comment) => comment.file === file.name && shownInline(comment));
-        // Notes are on the branch diff's lines: not in a commit's.
-        const fileNotes = scopedCommit ? [] : notes.filter((note) => note.file === file.name);
+        // Notes are on the lines of the map's diff: not in a commit's.
+        const fileNotes = scope.kind === "commit" ? [] : notes.filter((note) => note.file === file.name);
         const signature = JSON.stringify([
           comments,
           fileNotes,
@@ -1217,10 +1276,10 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   // Threads: their state, the chapter they belong to, the inbox.
   const run = (comment: Comment) => progress?.replies[comment.id] && awaitingReply(comment) ? progress.replies[comment.id] : undefined;
   const stateOf = (comment: Comment): ThreadState => threadState(comment, run(comment), unreadOf(comment.id));
-  /** The map chapter of a thread on the branch's own snapshot. */
+  /** The map chapter of a thread on the snapshot the scope's map is of. */
   function chapterOf(comment: Comment) {
-    if (comment.snapshotId && comment.snapshotId !== review.id) return null;
-    const file = branchFiles.find((file) => file.name === comment.file);
+    if (comment.snapshotId && comment.snapshotId !== mapReview?.id) return null;
+    const file = mapFiles.find((file) => file.name === comment.file);
     const prefix = comment.side === "additions" ? "addition" : "deletion";
     const hunk = file?.hunks.findIndex((hunk) => comment.end >= hunk[`${prefix}Start`] && comment.end < hunk[`${prefix}Start`] + Math.max(1, hunk[`${prefix}Count`])) ?? -1;
     return file && hunk >= 0 ? chapterOfHunk.get(hunkKey(file.name, hunk)) ?? null : null;
@@ -1259,7 +1318,8 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     if (visible() && (shownChapter === null || chapterOf(comment) === shownChapter))
       return jumpTo({ id: comment.file, line: comment.end, side: comment.side, column: 0 });
     const chapter = chapterOf(comment);
-    setScope(chapter !== null && scope.kind === "chapter" ? { kind: "chapter", index: chapter } : scope.kind === "commit" ? scope : { kind: "branch" });
+    setScope(inChanges ? { kind: "changes", chapter: shownChapter !== null ? chapter : null }
+      : chapter !== null && scope.kind === "chapter" ? { kind: "chapter", index: chapter } : scope.kind === "commit" ? scope : { kind: "branch" });
     afterRender(() => afterRender(() => jumpTo({ id: comment.file, line: comment.end, side: comment.side, column: 0 })));
   }
   // `i`: the next thread with a new reply: the reader jumps to it and the panel opens it.
@@ -1298,7 +1358,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     setSelection(null);
     cursor.current = null;
     cursorPosition.set(null);
-    setScope({ kind: "chapter", index });
+    setScope(inChanges ? { kind: "changes", chapter: index } : { kind: "chapter", index });
     dismissMapJob();
   }
   // The next chapter worth reading: skip-safe ones are passed over.
@@ -1426,9 +1486,9 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   // A map request goes to the agent thread; its progress shows in the pill, the rail and the inbox.
   async function requestMap() {
     const target = agentThread();
-    if (!target) return;
+    if (!target || !mapReview) return;
     try {
-      await api.requestMap.mutate({ id: review.id, threadId: target.id });
+      await api.requestMap.mutate({ id: mapReview.id, threadId: target.id });
       void refreshProgress();
       setRailOpen(true);
     } catch (error) { toast.error(error instanceof Error ? error.message : t("error"), { id: "workspace" }); }
@@ -1439,7 +1499,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   const railCurrent = (tab = railTab) => Math.max(0, tab === "map" ? shownChapter ?? 0 : tab === "files" ? shownFiles.findIndex((file) => file.name === active) : tab === "commits" ? commitIndex : 0);
   function pickFile(name: string) {
     if (files.some((file) => file.name === name) && !wholeFile) return openFile(name);
-    setScope(scope.kind === "commit" ? scope : { kind: "branch" });
+    setScope(scope.kind === "commit" ? scope : inChanges ? { kind: "changes", chapter: null } : { kind: "branch" });
     afterRender(() => afterRender(() => openFile(name)));
   }
   function railOpenRow(index: number) {
@@ -1458,7 +1518,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   const unreadByFile = new Map<string, number>();
   for (const { comment } of unread) unreadByFile.set(comment.file, (unreadByFile.get(comment.file) ?? 0) + 1);
   const chapterProgress: ChapterProgress[] = chapters.map((chapter) => ({
-    read: chapter.hunks.map((key) => read.has(branchIds.get(key)!)),
+    read: chapter.hunks.map((key) => read.has(mapIds.get(key)!)),
     newReplies: 0, working: 0,
   }));
   for (const comment of review.comments) {
@@ -1524,6 +1584,8 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     { id: "commitNext", group: "scope", keys: ["g >"], enabled: () => review.source.kind === "local", run: () => stepCommit(1) },
     { id: "commitPrevious", group: "scope", keys: ["g <"], enabled: () => review.source.kind === "local", run: () => stepCommit(-1) },
     { id: "wholeBranch", group: "scope", keys: ["g B"], run: () => setScope({ kind: "branch" }) },
+    { id: "changesOpen", group: "scope", keys: ["g n"], enabled: () => review.source.kind === "local", run: openChanges },
+    { id: "changesReviewed", group: "scope", keys: ["g d"], enabled: () => Boolean(scopedChanges) && !saving, run: () => void markChangesReviewed() },
     { id: "readNext", group: "scope", keys: ["Space"], enabled: () => !saving, run: () => void readAndNext() },
     { id: "readToggle", group: "scope", keys: ["m"], enabled: () => !saving, run: toggleRead },
     { id: "requestMap", group: "scope", keys: ["g M"], enabled: () => !saving, run: () => void requestMap() },
@@ -1595,7 +1657,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
       start: value.start,
       end: value.end,
     });
-  const status = agentStatus(progress && { ...progress, error: progress.error ?? (threadsError || null) }, unread.length, now, !mapJob || mapJob.state !== "ready" || mapSeen === mapJob.requestedAt);
+  const status = agentStatus(progress && { ...progress, map: mapJob, error: progress.error ?? (threadsError || null) }, unread.length, now, !mapJob || mapJob.state !== "ready" || mapSeen === mapJob.requestedAt);
   const t3Error = progress?.error ?? (threadsError || null);
   const working = inbox.find((comment) => stateOf(comment) === "working");
   const lastReply = agentReplies.map(({ reply }) => reply.createdAt).sort().at(-1);
@@ -1615,7 +1677,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     );
     if (mapJob && mapPending) {
       const steps = [
-        { done: true, text: t("mapCard.sent", { files: branchFiles.length }) },
+        { done: true, text: t("mapCard.sent", { files: mapFiles.length }) },
         { done: mapJob.state === "working", text: t("mapCard.picked") },
         { now: mapJob.state === "working", text: t("mapCard.working", { time: elapsed(mapJob.requestedAt, now) }) },
         { text: t("mapCard.written") },
@@ -1632,8 +1694,8 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     if (mapJob?.state === "finished" && mapSeen !== mapJob.requestedAt) return (
       <div className="rail-card"><h4><Dot tone="warn" />{t("mapCard.finished", { title: mapJob.title })}</h4><p className="flex items-center gap-1.5"><Keys value="g M" />{t("mapCard.again")}<button className="ml-auto underline" onClick={dismissMapJob}>{t("dismiss")}</button></p></div>
     );
-    if (!reviewMap && mapLoaded) return (
-      <div className="rail-card"><h4>{t("mapCard.none")}</h4><p className="flex flex-wrap items-center gap-1.5"><Keys value="g M" />{thread ? t("mapCard.ask", { title: thread.title }) : threadsError || t("noAgentThread")}</p></div>
+    if (!reviewMap && mapLoaded && mapReview) return (
+      <div className="rail-card"><h4>{t("mapCard.none")}</h4><p className="flex flex-wrap items-center gap-1.5"><Keys value="g M" />{thread ? t(inChanges ? "mapCard.askChanges" : "mapCard.ask", { title: thread.title }) : threadsError || t("noAgentThread")}</p></div>
     );
     if (mapJob?.state === "ready" && mapSeen !== mapJob.requestedAt) return (
       <div className="rail-card"><h4><Dot tone="ok" />{t("mapCard.ready")}</h4><p className="flex items-center gap-1.5"><Keys value="M" />{t("mapCard.start")}</p></div>
@@ -1660,11 +1722,14 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
         </div>
         <div className="scope-switch" role="group" aria-label={t("scope")}>
           <button aria-pressed={scope.kind === "branch" && !wholeFile} onClick={() => setScope({ kind: "branch" })}>{t("scopeBranch")}<Keys value="g B" /></button>
-          <button aria-pressed={scope.kind === "chapter"} disabled={!chapters.length} onClick={() => chapters.length && openChapter(shownChapter ?? firstUnread() ?? 0)}>
+          <button aria-pressed={shownChapter !== null} disabled={!chapters.length} onClick={() => chapters.length && openChapter(shownChapter ?? firstUnread() ?? 0)}>
             {t("scopeChapter", { position: shownChapter === null ? "—" : `${shownChapter + 1}/${chapters.length}` })}<Keys value="<" /><Keys value=">" />
           </button>
           <button aria-pressed={scope.kind === "commit"} disabled={review.source.kind !== "local"} onClick={() => openRail("commits", true)}>
             {t("scopeCommit", { position: scope.kind === "commit" && commits ? `${commitIndex + 1}/${commits.length}` : "—" })}<Keys value="g <" /><Keys value="g >" />
+          </button>
+          <button aria-pressed={inChanges} disabled={review.source.kind !== "local"} onClick={openChanges}>
+            {t("scopeChanges", { count: thread ? Math.max(0, thread.latestTurn - thread.reviewedTurn) : 0 })}<Keys value="g n" />
           </button>
         </div>
         <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
@@ -1712,6 +1777,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
             return <Brief chapter={chapter} index={shownChapter} checked={chapter.check.map((item) => read.has(checkId(chapter, item)))}
               hunks={{ read: ids.filter((id) => read.has(id)).length, total: ids.length }} onCheck={tickCheck} />;
           })()}
+          {!wholeFile && inChanges && shownChapter === null && !done && <ChangesBrief changes={changes?.threadId === thread?.id ? changes : null} error={changesError} thread={thread?.title ?? ""} now={now} />}
           {!wholeFile && scope.kind === "commit" && (
             <section className="brief">
               <div className="flex items-center gap-2.5 text-sm">
@@ -1737,7 +1803,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
                 <li>{t("unresolvedComments", { count: review.comments.filter((comment) => !comment.thread && !comment.github && !comment.resolved).length })}</li>
                 <li>{t("githubDraftCount", { count: review.comments.filter((comment) => comment.destination === "github" && !comment.github).length })}</li>
               </ul>
-              <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground"><Keys value="g s" />{t("githubReview")} · <Keys value="g m" />{t("copy")} · <Keys value="I" />{t("inbox")}</p>
+              <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground">{scopedChanges && <><Keys value="g d" />{t("changes.markReviewed")} · </>}<Keys value="g s" />{t("githubReview")} · <Keys value="g m" />{t("copy")} · <Keys value="I" />{t("inbox")}</p>
             </section>
           ) : (
           <CodeView<Annotation>
@@ -1905,7 +1971,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
         </main>
         {panel && (
           <AgentPanel focused={focus === "panel"} title={thread?.title ?? t("noAgentThreadShort")} tone={t3Error ? "warn" : status.tone} state={panelState}
-            job={mapJob && mapPending ? { state: t(`mapJobState.${mapJob.state}`), tone: "warn", timer: elapsed(mapJob.requestedAt, now), files: branchFiles.length } : null}
+            job={mapJob && mapPending ? { state: t(`mapJobState.${mapJob.state}`), tone: "warn", timer: elapsed(mapJob.requestedAt, now), files: mapFiles.length } : null}
             items={inboxItems} selected={inboxIndex} open={openThread ?? undefined} onOpen={(id) => openInboxItem(id, true)}>
             {draft ? (
               <section className="conversation">

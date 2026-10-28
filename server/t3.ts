@@ -21,9 +21,14 @@ export type ShellThread = {
   latestRunCompletedAt?: string | null;
   /** Set while a run is going. */
   activeRunId?: string | null;
+  /** `run:thread:<id>:ordinal:<n>`. */
+  latestRunId?: string | null;
 };
 export type Shell = { threads: ShellThread[]; projects: Array<{ id: string; workspaceRoot: string }> };
-export type AgentThread = { id: string; title: string; updatedAt: string };
+export type AgentThread = { id: string; title: string; updatedAt: string; latestTurn: number };
+
+/** The thread's latest turn (its runs' ordinal), 0 before the first: for counting turns since one. */
+export const latestTurn = (thread: ShellThread) => Number(/:ordinal:(\d+)$/.exec(thread.latestRunId ?? "")?.[1] ?? 0);
 
 /**
  * Threads working in one of `directories` (a thread without a worktree works
@@ -42,6 +47,7 @@ export function matchThreads(shell: Shell, directories: string[]): AgentThread[]
     .map((thread) => ({
       id: thread.id,
       title: thread.title,
+      latestTurn: latestTurn(thread),
       // The last message or run, as T3's own sidebar orders threads;
       // updatedAt also moves on renames and pins.
       updatedAt: [thread.latestUserMessageAt, thread.latestRunRequestedAt, thread.latestRunStartedAt, thread.latestRunCompletedAt]
@@ -62,14 +68,19 @@ async function serverUrl() {
   }
 }
 
-/** One RPC over a fresh socket: a unary call's result, or a stream's first value. */
-async function call<T>(tag: string, payload: unknown): Promise<T> {
+function token() {
   const token = process.env.T3CODE_TOKEN;
   if (!token) throw new Error("Set T3CODE_TOKEN to reach T3 Code (see README).");
+  return token;
+}
+
+/** One RPC over a fresh socket: a unary call's result, or a stream's first value. */
+async function call<T>(tag: string, payload: unknown): Promise<T> {
+  const auth = token();
   const base = await serverUrl();
   let response: Response;
   try {
-    response = await fetch(`${base}/api/auth/websocket-ticket`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+    response = await fetch(`${base}/api/auth/websocket-ticket`, { method: "POST", headers: { authorization: `Bearer ${auth}` } });
   } catch {
     throw new Error(`Cannot reach T3 Code at ${base}.`);
   }
@@ -142,4 +153,59 @@ export async function sendToThread(threadId: string, text: string) {
     deliveryIntent: "auto",
     dispatchMode: { type: "start_immediately" },
   });
+}
+
+/** The parts of a T3 Code thread's projection that tell its turns apart. */
+export type ThreadProjection = {
+  runs: Array<{ id: string; ordinal: number; status: string; checkpointId: string | null; completedAt: string | null; requestedAt: string }>;
+  messages: Array<{ runId: string | null; role: string; text: string; createdAt: string }>;
+  checkpoints: Array<{ id: string; scopeId: string; ordinalWithinScope: number; ref: string; status: string }>;
+  checkpointScopes: Array<{ id: string; kind: string }>;
+};
+
+/** A thread's whole projection (the websocket's is cut to recent history). */
+export async function readThread(threadId: string): Promise<ThreadProjection> {
+  const auth = token();
+  const base = await serverUrl();
+  let response: Response;
+  try {
+    response = await fetch(`${base}/api/orchestration/threads/${encodeURIComponent(threadId)}`, {
+      headers: { authorization: `Bearer ${auth}`, "x-t3-orchestration-protocol": "2" },
+    });
+  } catch {
+    throw new Error(`Cannot reach T3 Code at ${base}.`);
+  }
+  if (!response.ok) throw new Error(`T3 Code did not return thread ${threadId} (HTTP ${response.status}).`);
+  return ((await response.json()) as { projection: ThreadProjection }).projection;
+}
+
+export type Turn = {
+  ordinal: number;
+  status: string;
+  at: string;
+  /** What the user wrote in this turn (the message that started it and any sent while it ran). */
+  messages: string[];
+  /** The checkpoint refs before and after the turn; null where T3 Code has none ready. */
+  start: string | null;
+  end: string | null;
+};
+
+/**
+ * The thread's turns after turn `after`, oldest first. T3 Code snapshots the
+ * checkout per turn in its root checkpoint scope: ordinal n after turn n,
+ * n - 1 (or a baseline taken when it was missing) before it.
+ */
+export function threadTurns(thread: ThreadProjection, after: number): Turn[] {
+  const root = thread.checkpointScopes.find((scope) => scope.kind === "root_run");
+  const ready = new Map(thread.checkpoints.filter((checkpoint) => checkpoint.scopeId === root?.id && checkpoint.status === "ready")
+    .map((checkpoint) => [checkpoint.ordinalWithinScope, checkpoint]));
+  return thread.runs.filter((run) => run.ordinal > after).sort((a, b) => a.ordinal - b.ordinal).map((run) => ({
+    ordinal: run.ordinal,
+    status: run.status,
+    at: run.completedAt ?? run.requestedAt,
+    messages: thread.messages.filter((message) => message.runId === run.id && message.role === "user")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((message) => message.text),
+    start: ready.get(run.ordinal - 1)?.ref ?? null,
+    end: run.checkpointId && ready.get(run.ordinal)?.id === run.checkpointId ? ready.get(run.ordinal)!.ref : null,
+  }));
 }

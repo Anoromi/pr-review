@@ -10,6 +10,8 @@ export type Source =
       branchReview?: boolean;
       branchComparison?: boolean;
       commit?: string;
+      /** A T3 Code thread's own changes in turns `from` to `to` (see server/changes.ts). */
+      changes?: { threadId: string; from: number; to: number };
     };
 
 export interface GitHubComment {

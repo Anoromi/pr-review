@@ -36,7 +36,7 @@ A review has three regions; `Tab` and `Shift-Tab` move between them, `Esc` retur
 - The **reader**: the diff of the current scope with the vim cursor. A review with a map opens on its first unread chapter, with the chapter's why and check list on top (`x` ticks the next check item, `2x` the second). Questions and comments show as one-line markers next to their lines; `Enter` on one opens it in the panel.
 - The **agent panel** (`|` hides it): the thread the review talks to (`gA`) and what it is doing, an inbox of every question and comment grouped by state (new replies, agent working, waiting, open, answered, resolved), and the open conversation with its composer.
 
-The top bar shows the scope (whole branch `gB`, chapter `<` `>`, commit `g<` `g>`), reading progress, and the **agent pill**: what the agent is doing in a few words (writing the map, answering, new replies, T3 Code unreachable). `I` focuses the inbox.
+The top bar shows the scope (whole branch `gB`, chapter `<` `>`, commit `g<` `g>`, [changes since you looked](#changes-since-you-looked) `gn`), reading progress, and the **agent pill**: what the agent is doing in a few words (writing the map, answering, new replies, T3 Code unreachable). `I` focuses the inbox.
 
 1. Read: `Space` marks the chapter (or, without a map, the file) read and moves to the next unread one. `m` toggles read. Read state is kept per hunk for the branch or PR, so a hunk read in a commit counts in the whole branch when the change is the same.
 2. Ask: `a` on a line or selection opens the composer in the panel; `Ctrl-Enter` sends it to the agent thread. `A` sends "Explain this code" without typing. `c` writes a review comment the same way.
@@ -107,13 +107,13 @@ Defaults follow a Dvorak home row, with `j`/`k`/`l` and the arrow keys as aliase
 
 - **Cursor:** `h` `t` `n` `s` left/down/up/right, `T`/`N` 8 lines, `w` `b` `W` `B` words, `_` `-` line start/end, `Ctrl-d`/`Ctrl-u` half page, `gg`/`G` top/bottom, `Alt-h`/`Alt-s` old/new side, `Alt-t`/`Alt-n` reveal skipped lines.
 - **Jump:** `]` `[` next/previous file, `f` go to file, `}` `{` hunk, `)` `(` comment, `/` search, `;` `,` next/previous match, `o` whole file, `*` search the repository.
-- **Scope and reading:** `M` map, `>`/`<` next/previous chapter to read, `C` commits, `g>`/`g<` next/previous commit, `gB` whole branch, `Space` read and next, `m` toggle read, `gM` ask the agent thread for a map.
+- **Scope and reading:** `M` map, `>`/`<` next/previous chapter to read, `C` commits, `g>`/`g<` next/previous commit, `gB` whole branch, `gn` changes since you looked (again: refresh), `gd` mark them reviewed, `Space` read and next, `m` toggle read, `gM` ask the agent thread for a map (in the changes scope: a map of the changes to your asks).
 - **Files:** `za` `zc` `zo` toggle/collapse/expand, `zM` `zR` all files, `gf` file filters, `zf` filtered files.
 - **Comments and the agent:** `a` ask, `A` explain, `c` comment (or return to an unfinished draft), `gA` pick the thread, `Enter` open the thread at the cursor, `i` next new reply, `I` or `gc` the inbox. On a thread (at the cursor, or selected in the inbox): `r` reply, `x` resolve/reopen, `e` edit, `D` twice to delete. In the composer, `Ctrl-Enter` sends, `Ctrl-g` switches a comment between local and GitHub, and `Esc` returns to the reader, keeping a non-empty draft.
 - **Selection:** `v` characters, `V` lines, `y` copy, `Esc` cancel.
 - **View:** `Tab`/`Shift-Tab` rail, reader, panel; `u` split/unified, `gw` wrap, `\` rail, `|` panel, `gt` theme. With the rail or panel focused, `t`/`n` move in its list and `Enter` opens; in the rail `h`/`s` switch tabs.
 - **Review:** `p` switch PR in the stack, `gs` GitHub review, `gr` reload, `go` open on GitHub, `gm` copy Markdown.
-- **App:** `gh` Home (`gp`, `gb` its PR and branch sections), `gu` open a PR URL, `Esc` back to the open review.
+- **App:** `gh` Home (`gp`, `gb` its PR and branch sections; `gn` on an agent row opens its changes since you looked), `gu` open a PR URL, `Esc` back to the open review.
 
 Commands live in one table per view (`useCommands` in `src/keys.ts`). To rebind, store a JSON object of command id to key list in `localStorage["pr-review:keymap"]`, for example `{"cursorDown": ["j"], "fileNext": ["J"]}`. Command ids are the keys under `keys.cmd` in `config/i18n/en/webapp.json`.
 
@@ -136,6 +136,16 @@ A review map groups the diff's hunks into chapters in reading order, each with w
 `>` and `<` move between chapters, passing over skip-safe ones. Every hunk lands in exactly one chapter: hunks the map does not name are listed in a final **Uncovered** chapter, and references to hunks that are not in the diff are listed as stale on their chapter. Skip-safe chapters show their reason (moved code, generated, formatting, rename). For moved code the app checks that the chapter's removed lines are exactly its added lines, ignoring whitespace, and shows "verified" or "not verified"; unverified moves are not skipped. A file split across chapters shows no unchanged context (`o` shows the whole file).
 
 A chapter's `notes` explain lines: `{ "file", "side": "new" | "old", "start", "end", "why" }`. Each shows under its last line, in the chapter and the whole branch. A note on lines the diff does not show is listed in red on its chapter's brief. In a commit scope, the commit list shows which chapters each commit touches, and the commit's brief counts its hunks the map does not cover.
+
+## Changes since you looked
+
+After asking the agent thread for changes, `gn` shows what it changed since you last looked: the thread's turns after the last one you marked reviewed, each with what you wrote in it, and the diff of the agent's own changes in them. Home shows the count on the thread's row ("2 turns since you looked"); `gn` there opens the review on it.
+
+The snapshots are T3 Code's own checkpoints: after each turn T3 commits the whole working tree (uncommitted and untracked files too) to `refs/t3/orchestration-v2/checkpoints/…/ordinal/<turn>`, with HEAD as the parent. pr-review reads them and the thread's messages from T3 Code (`GET /api/orchestration/threads/<id>`) and never writes to them. A turn whose snapshot is missing is reported, not skipped.
+
+The diff leaves out what merges and rebases brought in from other branches (`agentChanges` in `server/changes.ts`). A merge made in those turns shows only its conflict resolutions and edits beyond the automatic merge, as `git show --remerge-diff` does; commits fast-forwarded from main (or the PR's base) are left out the same way. After a rebase onto a moved main, the branch's own changes before and after are compared, as `git range-diff` does, so main's changes do not show.
+
+`gM` in this scope asks the thread to map the changes to what you asked: one chapter per ask with the ask quoted, notes on the lines, and what was asked but not done listed on the chapter's brief. Changes no ask explains land in Uncovered. `gd` marks the turns reviewed: the next `gn` starts after them. pr-review keeps the marker and this map per thread in `.reviews/threads/<thread-id>/` (`reviewed.json`, `map.json`, `map-diff.patch`, `map-request.json`); marking reviewed renames the map to `turn-<n>-map.json`. The changes are a snapshot in the review's conversation folder, so questions and comments on them work as anywhere else.
 
 ## Agent conversations
 

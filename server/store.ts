@@ -56,6 +56,44 @@ export class ReviewStore {
     return join(this.root, "prs", key);
   }
 
+  /**
+   * What pr-review keeps about a T3 Code thread's changes: the last turn
+   * reviewed (reviewed.json) and the map of the changes since (map.json,
+   * map-diff.patch, map-request.json, as for a branch).
+   */
+  threadDirectory(threadId: string) {
+    if (!/^[\w-]{1,200}$/.test(threadId)) throw new Error("Invalid thread ID.");
+    return join(this.root, "threads", threadId);
+  }
+
+  /** The last turn of the thread the user marked reviewed; 0 before the first. */
+  async readReviewedTurn(threadId: string): Promise<number> {
+    try {
+      return z.object({ turn: z.number().int().nonnegative() }).parse(JSON.parse(await readFile(join(this.threadDirectory(threadId), "reviewed.json"), "utf8"))).turn;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw new Error("Cannot read reviewed.json: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  /**
+   * Marks the thread's turns up to `turn` reviewed. The map of those changes
+   * is kept beside, renamed for the turn, so the next changes start without one.
+   */
+  async setReviewedTurn(threadId: string, turn: number) {
+    return this.transaction(async () => {
+      const directory = this.threadDirectory(threadId);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      for (const name of ["map.json", "map-diff.patch", "map-request.json"]) {
+        try { await rename(join(directory, name), join(directory, `turn-${turn}-${name}`)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      const temporary = join(directory, `.${randomUUID()}.tmp`);
+      await writeFile(temporary, JSON.stringify({ turn, at: new Date().toISOString() }) + "\n", { mode: 0o600 });
+      await rename(temporary, join(directory, "reviewed.json"));
+    });
+  }
+
   async readResolutions(review: Review): Promise<Record<string, boolean>> {
     try {
       return z.record(z.string(), z.boolean()).parse(JSON.parse(await readFile(join(this.prDirectory(review), "resolved.json"), "utf8")));

@@ -18,7 +18,9 @@ type Row = {
   text: string;
   detail: string;
   depth?: number;
-  thread?: { title: string; working: boolean };
+  thread?: { title: string; working: boolean; newTurns: number };
+  /** Opens the review on the thread's changes since the user last looked. */
+  openChanges?: () => void;
   /** Where its review's progress lives: a PR, or a branch of a checkout. */
   target: { url: string } | { repo: string; branch: string };
   time: string;
@@ -38,7 +40,7 @@ export function Home({ section, busy, currentUrl, onPulls, onOpenPull, onOpenBra
   onPulls: (pulls: MyPullRequest[]) => void;
   onOpenPull: (url: string, checkout?: string) => void;
   onOpenBranch: (branch: string, checkout?: string) => void;
-  onOpenCheckout: (checkout: string) => void;
+  onOpenCheckout: (checkout: string, changesOf?: string) => void;
   buttons: ReactNode;
 }) {
   const t = useTranslations("app");
@@ -81,8 +83,9 @@ export function Home({ section, busy, currentUrl, onPulls, onOpenPull, onOpenBra
         key: `agent:${agent.checkout}`, section: "agents",
         title: pull ? <><b>#{pull.number}</b> {pull.title}</> : agent.branch,
         text: `${pull?.number ?? ""} ${pull?.title ?? ""} ${agent.branch} ${agent.title}`, detail: agent.branch,
-        thread: agent, target: pull ? { url: pull.url } : { repo: agent.checkout, branch: agent.branch }, time: agent.updatedAt,
-        open: () => onOpenCheckout(agent.checkout),
+        thread: { ...agent, newTurns: Math.max(0, agent.latestTurn - agent.reviewedTurn) },
+        target: pull ? { url: pull.url } : { repo: agent.checkout, branch: agent.branch }, time: agent.updatedAt,
+        open: () => onOpenCheckout(agent.checkout), openChanges: () => onOpenCheckout(agent.checkout, agent.threadId),
       };
     }),
     ...(ordered ?? []).filter(({ pull }) => !agentBranches.has(pull.headRefName)).map(({ pull, depth, parent }): Row => ({
@@ -136,6 +139,7 @@ export function Home({ section, busy, currentUrl, onPulls, onOpenPull, onOpenBra
       { id: "listFilter", group: "list", keys: ["/"], run: () => filterInput.current?.select() },
       { id: "pullsOrder", group: "list", keys: ["o"], run: () => setOrder(order === "stack" ? "recent" : "stack") },
       { id: "pullsRefresh", group: "list", keys: ["r"], enabled: () => !loading, run: () => void refresh() },
+      { id: "changesOpen", group: "list", keys: ["g n"], enabled: () => Boolean(matching[selected]?.openChanges) && !busy, run: () => matching[selected].openChanges!() },
     ],
   });
   function newReplies(item: RowProgress | undefined) {
@@ -194,7 +198,7 @@ export function Home({ section, busy, currentUrl, onPulls, onOpenPull, onOpenBra
                       <div key={row.key} role="row" aria-selected={position === selected} className={`home-row ${busy ? "opacity-50" : ""}`}
                         onMouseDown={() => setIndex(position)} onClick={() => open(row)}>
                         <span>{tone ? <Dot tone={tone} /> : row.section === "branches" ? <GitBranch className="size-3.5 text-muted-foreground" /> : <Dot tone={status.tone} />}</span>
-                        <span className="truncate" style={{ paddingLeft: (row.depth ?? 0) * 18 }}>{row.title}</span>
+                        <span className="truncate" style={{ paddingLeft: (row.depth ?? 0) * 18 }}>{row.title}{row.thread && row.thread.newTurns > 0 && <button className="chip ml-2" onClick={(event) => { event.stopPropagation(); if (!busy) row.openChanges?.(); }}>{t("homeNewTurns", { count: row.thread.newTurns })}</button>}</span>
                         <span className="truncate font-mono text-[11.5px] text-muted-foreground">{row.detail}</span>
                         <span className="flex items-center gap-2 text-xs text-muted-foreground">
                           <span className="bar"><i style={{ width: `${unit ? (unit.read / Math.max(1, unit.total)) * 100 : 0}%` }} /></span>

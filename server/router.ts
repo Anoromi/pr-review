@@ -12,7 +12,8 @@ import { readFilters, writeFilters } from "./filters";
 import { localPullMetadata, listCheckoutPulls, listMyPulls, pullForBranch } from "./github";
 import { checkoutRepo, currentBranch, githubRepo, githubRepoOrNull } from "./repository";
 import { markdown } from "./markdown";
-import { listThreads, readShell, sendToThread } from "./t3";
+import { listThreads, readShell, readThread, sendToThread, threadTurns, type Turn } from "./t3";
+import { loadChanges } from "./changes";
 import { resolveMap } from "../shared/map";
 import { commitChapters } from "../shared/read";
 import { agentCheckouts, agentProgress, latestSnapshots, mapOutdated, readingProgress, readMap } from "./home";
@@ -70,14 +71,41 @@ export function createRouter(store: ReviewStore) {
     if (review.source.kind !== "local") throw new Error("Only reviews of a local checkout have agent threads.");
     return review.source.worktree ?? review.source.repo;
   }
+  // The directory of the review's map: its branch or PR's, or for a thread's changes the thread's.
+  function mapDirectory(review: Review) {
+    return review.source.kind === "local" && review.source.changes ? store.threadDirectory(review.source.changes.threadId) : store.prDirectory(review);
+  }
+  // A freshly loaded snapshot, or the saved one with its id.
+  function readOrSave(fresh: Review) {
+    return store.transaction(async () => {
+      try { return await store.read(fresh.id); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      return store.save(fresh);
+    });
+  }
   async function threadTitle(review: Review, threadId: string) {
     const thread = (await listThreads(reviewCheckout(review))).find((thread) => thread.id === threadId);
     if (!thread) throw new Error("That agent thread no longer works in this checkout.");
     return thread.title;
   }
   return t.router({
-    // T3 Code threads working in the review's checkout, most recently active first.
-    threads: procedure.input(idInput).query(async ({ input }) => listThreads(reviewCheckout(await store.read(input.id)))),
+    // T3 Code threads working in the review's checkout, most recently active
+    // first, with the last turn of each marked reviewed.
+    threads: procedure.input(idInput).query(async ({ input }) => Promise.all((await listThreads(reviewCheckout(await store.read(input.id))))
+      .map(async (thread) => ({ ...thread, reviewedTurn: await store.readReviewedTurn(thread.id) })))),
+    // The thread's turns since the last one reviewed, grouped with what the
+    // user wrote in each, and its own changes in them as a snapshot in the
+    // review's conversation folder (null until one of them finished).
+    openChanges: procedure.input(idInput.extend({ threadId: z.string().min(1) })).mutation(async ({ input }) => {
+      const review = await store.read(input.id);
+      const reviewedTurn = await store.readReviewedTurn(input.threadId);
+      const turns = threadTurns(await readThread(input.threadId), reviewedTurn);
+      const fresh = await loadChanges(review, input.threadId, turns, store);
+      return { reviewedTurn, turns, review: fresh && await readOrSave(fresh) };
+    }),
+    // Marks the thread's turns up to `turn` reviewed: its changes start after it.
+    markChangesReviewed: procedure.input(z.object({ threadId: z.string().min(1), turn: z.number().int().nonnegative() }))
+      .mutation(({ input }) => store.setReviewedTurn(input.threadId, input.turn)),
     // A question about lines of the diff, saved as a comment and sent to the
     // agent thread, which answers through the `reply` mutation.
     ask: procedure.input(askInput)
@@ -109,21 +137,26 @@ export function createRouter(store: ReviewStore) {
         await sendToThread(comment.thread.id, followUpMessage(current, comment, comment.replies![last].body, store.prDirectory(current)));
       }),
     // The review map an agent wrote to map.json (see shared/map.ts), or null,
-    // and whether it was written for another diff (see mapOutdated).
+    // and whether it was written for another diff (see mapOutdated). For a
+    // thread's changes, the map of those (see requestMap).
     map: procedure.input(idInput).query(async ({ input }) => {
       const review = await store.read(input.id);
-      return { map: await readMap(store, review), outdated: await mapOutdated(store, review) };
+      const directory = mapDirectory(review);
+      return { map: await readMap(store, review, directory), outdated: await mapOutdated(store, review, directory) };
     }),
     // Asks the agent thread to write map.json for this review's diff.
     // The request is kept in map-request.json, so `progress` can follow it.
+    // For a thread's changes, the thread maps them to what the user asked.
     requestMap: procedure.input(idInput.extend({ threadId: z.string().min(1) })).mutation(async ({ input }) => {
       const review = await store.read(input.id);
       const title = await threadTitle(review, input.threadId);
-      const directory = store.prDirectory(review);
+      const changes = review.source.kind === "local" ? review.source.changes : undefined;
+      if (changes && changes.threadId !== input.threadId) throw new Error("Only the thread that made these changes can map them.");
+      const directory = mapDirectory(review);
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await writeFile(join(directory, "map-diff.patch"), review.patch, { mode: 0o600 });
       const requestedAt = new Date().toISOString();
-      await sendToThread(input.threadId, [
+      await sendToThread(input.threadId, changes ? changesMapMessage(review, directory, threadTurns(await readThread(changes.threadId), changes.from - 1).filter((turn) => turn.ordinal <= changes.to)) : [
         `Run the review-map skill (~/.agents/skills/review-map/SKILL.md) for the review "${review.title}" in pr-review.`,
         "",
         `The diff to map is ${join(directory, "map-diff.patch")} (base ${review.baseRevision}, head ${review.revision}). Name hunks by the starts in its @@ headers.`,
@@ -132,11 +165,13 @@ export function createRouter(store: ReviewStore) {
       ].join("\n"));
       await writeFile(join(directory, "map-request.json"), JSON.stringify({ threadId: input.threadId, title, requestedAt, revision: review.revision }) + "\n", { mode: 0o600 });
     }),
-    // What the agent threads are doing with the map request and questions
-    // (see agentProgress), and where the review's branch points now.
-    progress: procedure.input(idInput).query(async ({ input }) => {
+    // What the agent threads are doing with the map requests and questions
+    // (see agentProgress; `changesOf` adds that thread's changes map), and
+    // where the review's branch points now.
+    progress: procedure.input(idInput.extend({ changesOf: z.string().min(1).optional() })).query(async ({ input }) => {
       const review = await store.read(input.id);
-      return { ...(await agentProgress(store, review, readShell)), head: await branchHead(review) };
+      const changes = input.changesOf ? store.threadDirectory(input.changesOf) : undefined;
+      return { ...(await agentProgress(store, review, readShell, changes)), head: await branchHead(review) };
     }),
     branches: procedure.input(scoped.optional()).query(({ input }) => listBranches(checkoutRepo(input?.checkout))),
     // The review's own commits, oldest first, each hunk with its id (for read
@@ -154,14 +189,8 @@ export function createRouter(store: ReviewStore) {
       })));
     }),
     // A commit of the review as its own snapshot in the same conversation folder.
-    openCommit: procedure.input(idInput.extend({ commit: z.string().regex(/^[a-f0-9]{40}$/) })).mutation(async ({ input }) => {
-      const fresh = await loadCommit(await store.read(input.id), input.commit, store);
-      return store.transaction(async () => {
-        try { return await store.read(fresh.id); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        return store.save(fresh);
-      });
-    }),
+    openCommit: procedure.input(idInput.extend({ commit: z.string().regex(/^[a-f0-9]{40}$/) }))
+      .mutation(async ({ input }) => readOrSave(await loadCommit(await store.read(input.id), input.commit, store))),
     read: procedure.input(idInput).query(async ({ input }) => store.readRead(await store.read(input.id))),
     setRead: procedure.input(idInput.extend({ keys: z.array(z.string().min(1).max(5000)).max(5000), read: z.boolean() }))
       .mutation(({ input }) => store.setRead(input.id, input.keys, input.read)),
@@ -175,7 +204,8 @@ export function createRouter(store: ReviewStore) {
       let agentError: string | null = null;
       try { agents = agentCheckouts(await readShell(), repo); }
       catch (error) { agentError = error instanceof Error ? error.message : String(error); }
-      return { repo, agents, agentError, branches: await branchRows(repo) };
+      const withReviewed = await Promise.all(agents.map(async (agent) => ({ ...agent, reviewedTurn: await store.readReviewedTurn(agent.threadId) })));
+      return { repo, agents: withReviewed, agentError, branches: await branchRows(repo) };
     }),
     // Reading and agent progress of the latest review of each PR (url) or branch (repo and branch), null where none exists.
     reviewProgress: procedure.input(z.object({ targets: z.array(z.union([z.object({ url: z.string().min(1) }), z.object({ repo: z.string().min(1), branch: z.string().min(1) })])).max(100) }))
@@ -191,14 +221,8 @@ export function createRouter(store: ReviewStore) {
           return { ...(await readingProgress(store, review)), agent: await agentProgress(store, review, once) };
         }));
       }),
-    openBranch: procedure.input(scoped.extend({ branch: z.string().min(1) })).mutation(async ({ input }) => {
-      const fresh = await loadBranchReview(input.branch, store, checkoutRepo(input.checkout));
-      return store.transaction(async () => {
-        try { return await store.read(fresh.id); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        return store.save(fresh);
-      });
-    }),
+    openBranch: procedure.input(scoped.extend({ branch: z.string().min(1) }))
+      .mutation(async ({ input }) => readOrSave(await loadBranchReview(input.branch, store, checkoutRepo(input.checkout)))),
     list: procedure.query(() => store.list()),
     comments: procedure.input(idInput).query(async ({ input }) => {
       const review = await store.read(input.id);
@@ -349,6 +373,25 @@ const replyInstruction = (review: Review, comment: Comment) => [
 ${JSON.stringify({ id: review.id, commentId: comment.id, author: "Agent", body: "YOUR ANSWER" })}
 JSON`),
 ];
+/**
+ * Asks the thread that made a change set (`review`, a thread's changes) to map
+ * it to what the user asked in `turns`: one chapter per ask, what was not
+ * done in its chapter, changes nobody asked for left to Uncovered.
+ */
+export function changesMapMessage(review: Review, directory: string, turns: Turn[]) {
+  return [
+    `Run the review-map skill (~/.agents/skills/review-map/SKILL.md) in its changes mode for "${review.title}" in pr-review: map what you changed in this thread in these turns to what the user asked.`,
+    "",
+    `The diff to map is ${join(directory, "map-diff.patch")}: your own changes in those turns, without what merges or rebases brought in from other branches (merge conflict resolutions do show). Name hunks by the starts in its @@ headers.`,
+    "",
+    "What the user wrote in those turns, oldest first:",
+    ...turns.flatMap((turn) => ["", `Turn ${turn.ordinal}:`, ...turn.messages.map(fence)]),
+    "",
+    "Write one chapter per thing the user asked (a message may ask several). Title it with the ask in a few words and start its `why` with the ask quoted from the message (a Markdown `>` quote), then how the change answers it. Put what was asked but not done, or only partly done, in that chapter's `notDone`; an ask with no change at all goes to the `notDone` of the chapter for the same message. Leave hunks no ask explains out of every chapter: pr-review lists them as Uncovered, so the user sees changes nobody asked for. Add notes on non-obvious lines as for any map.",
+    `Write the map to ${join(directory, "map.json")}. pr-review shows it as soon as the file is valid; an invalid file shows its errors there.`,
+  ].join("\n");
+}
+
 /** The first question in `comment`, with the lines and the diff around them. */
 export function askMessage(review: Review, comment: Comment, hunks: string) {
   const lines = hunks.split("\n");

@@ -28,6 +28,8 @@ export const reviewMapSchema = z.object({
       why: z.string().trim().min(1),
     })).default([]),
     skipSafe: z.object({ reason: z.enum(["moved", "generated", "formatting", "rename"]) }).optional(),
+    // In a map of a thread's changes: what the user asked and the change does not do.
+    notDone: z.array(z.string().trim().min(1)).default([]),
   })),
 });
 export type ReviewMap = z.infer<typeof reviewMapSchema>;
@@ -85,7 +87,7 @@ export function resolveMap(map: ReviewMap, files: FileDiffMetadata[]): Chapter[]
     const shown = notes.filter(({ note }) => inDiff(files, note));
     return { ...chapter, hunks: [], notes: shown.map(({ note }) => note), badNotes: notes.filter((item) => !shown.includes(item)).map(({ ref }) => ref), missing: missing[index] };
   });
-  const uncovered: Chapter = { title: "", why: "", risk: "high", check: [], hunks: [], notes: [], badNotes: [], missing: [], uncovered: true };
+  const uncovered: Chapter = { title: "", why: "", risk: "high", check: [], notDone: [], hunks: [], notes: [], badNotes: [], missing: [], uncovered: true };
   for (const file of files) {
     const keys = file.hunks.length ? file.hunks.map((_, hunk) => hunkKey(file.name, hunk)) : [hunkKey(file.name, -1)];
     for (const key of keys) {
