@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import type { Review } from "../shared/types";
 import { parseFiles } from "../shared/diff";
@@ -61,11 +63,55 @@ export async function ownCommits(review: Review) {
   });
 }
 
-/** Where the review's branch points now, or null where no local branch has its name (a PR fetched from GitHub). */
+/**
+ * Where the review's branch points now, or null where no local branch has its
+ * name (a PR fetched from GitHub). For a branch review whose branch is checked
+ * out, the commit of its worktree as it is now (see worktreeState).
+ */
 export async function branchHead(review: Review) {
   if (review.source.kind !== "local") return null;
-  try { return (await git(review.source.repo, "rev-parse", "--verify", "--quiet", `refs/heads/${review.source.branch}^{commit}`)).trim(); }
+  let head: string;
+  try { head = (await git(review.source.repo, "rev-parse", "--verify", "--quiet", `refs/heads/${review.source.branch}^{commit}`)).trim(); }
   catch { return null; }
+  const worktree = review.source.branchReview && await branchWorktree(review.source.repo, review.source.branch);
+  return worktree ? (await worktreeState(worktree)).commit : head;
+}
+
+/** The worktree `branch` is checked out in, or undefined. */
+export async function branchWorktree(repo: string, branch: string) {
+  return (await git(repo, "worktree", "list", "--porcelain", "-z")).split("\0\0")
+    .map((block) => block.split("\0"))
+    .find((fields) => fields.includes(`branch refs/heads/${branch}`))
+    ?.find((field) => field.startsWith("worktree "))?.slice(9);
+}
+
+/**
+ * What is in `worktree` now, as a commit: HEAD plus every staged, unstaged
+ * and untracked (not ignored) file, with HEAD as its parent. It is written
+ * through a copy of the index, so the worktree's own index and refs are never
+ * touched, and with HEAD's dates, so the same state always gets the same id.
+ * `files` counts the files it changes against HEAD; with none, `commit` is HEAD.
+ */
+export async function worktreeState(worktree: string) {
+  if ((await git(worktree, "ls-files", "--unmerged")).trim()) throw new Error(`Resolve merge conflicts in ${worktree} before reviewing.`);
+  const [head, headTree, date] = (await git(worktree, "log", "-1", "--format=%H%n%T%n%cI", "HEAD")).trim().split("\n");
+  const index = (await git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index")).trim();
+  const temporary = await mkdtemp(join(tmpdir(), "pr-review-index-"));
+  const env = {
+    ...process.env, GIT_INDEX_FILE: join(temporary, "index"),
+    GIT_AUTHOR_NAME: "pr-review", GIT_AUTHOR_EMAIL: "pr-review@localhost", GIT_AUTHOR_DATE: date,
+    GIT_COMMITTER_NAME: "pr-review", GIT_COMMITTER_EMAIL: "pr-review@localhost", GIT_COMMITTER_DATE: date,
+  };
+  const run = async (...args: string[]) => (await execute("git", ["-C", worktree, ...args], { env, maxBuffer: 60 * 1024 * 1024, timeout: 30000 })).stdout.trim();
+  try {
+    // Without an index (nothing ever staged), `add -A` builds one from the files.
+    await copyFile(index, env.GIT_INDEX_FILE).catch((error) => { if (error.code !== "ENOENT") throw error; });
+    await run("add", "-A");
+    const tree = await run("write-tree");
+    if (tree === headTree) return { commit: head, head, files: 0 };
+    const files = (await run("diff-tree", "-r", "-z", "--name-only", "--no-renames", headTree, tree)).split("\0").filter(Boolean).length;
+    return { commit: await run("commit-tree", tree, "-p", head, "-m", "Uncommitted changes"), head, files };
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
 const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -109,11 +155,14 @@ export async function loadBranchCommit(branch: string, commit: string, store: Re
 export async function loadBranchReview(branch: string, store: ReviewStore, repo = branchRepo()): Promise<Review> {
   repo = resolve(repo);
   const ref = await branchRef(repo, branch);
-  const commit = (await git(repo, "rev-parse", "--verify", `${ref}^{commit}`)).trim();
+  const worktree = await branchWorktree(repo, branch);
+  // A checked-out branch is reviewed as its worktree is: commits plus uncommitted files.
+  const state = worktree ? await worktreeState(worktree) : undefined;
+  const commit = state?.commit ?? (await git(repo, "rev-parse", "--verify", `${ref}^{commit}`)).trim();
   const main = await mainRef(repo);
   const baseBranch = main === "refs/remotes/origin/main" ? "origin/main" : "main";
   const base = (await git(repo, "merge-base", main, commit)).trim();
-  return loadBranchSnapshot(repo, branch, commit, base, baseBranch, store);
+  return loadBranchSnapshot(repo, branch, commit, base, baseBranch, store, state?.files ? { head: state.head, files: state.files } : undefined);
 }
 
 // A branch review links to the branch on GitHub when the checkout has a
@@ -123,10 +172,10 @@ function branchUrl(repo: string, branch: string) {
   return github ? `https://github.com/${github.slug}/tree/${encodeURIComponent(branch)}` : `file://${repo}#${encodeURIComponent(branch)}`;
 }
 
-async function loadBranchSnapshot(repo: string, branch: string, commit: string, base: string, baseBranch: string, store: ReviewStore): Promise<Review> {
+async function loadBranchSnapshot(repo: string, branch: string, commit: string, base: string, baseBranch: string, store: ReviewStore, uncommitted?: { head: string; files: number }): Promise<Review> {
   const id = createHash("sha256").update(JSON.stringify([repo, branch, commit, base, ...(baseBranch ? [baseBranch] : [])])).digest("hex").slice(0, 24);
   const title = baseBranch ? `${branch} vs ${baseBranch}` : `${branch}: ${(await git(repo, "show", "-s", "--format=%s", commit)).trim()}`;
-  const source = { kind: "local" as const, url: branchUrl(repo, branch), repo, branch, baseBranch, commit, branchReview: true, branchComparison: Boolean(baseBranch) };
+  const source = { kind: "local" as const, url: branchUrl(repo, branch), repo, branch, baseBranch, commit, branchReview: true, branchComparison: Boolean(baseBranch), ...(uncommitted && { uncommitted }) };
   return loadSnapshot(repo, id, title, source, commit, base, store);
 }
 

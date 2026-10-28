@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { branchHead, listBranches, loadBranchCommit, loadBranchReview, loadCommit, ownCommits } from "./branches";
@@ -119,6 +119,8 @@ test("a rewritten branch shows its new head, and a map written for the old diff 
   const git = async (...args: string[]) => (await exec("git", ["-C", repo, ...args])).stdout.trim();
   try {
     await git("init", "-b", "main");
+    // The store lives in the checkout; uncommitted files are part of a checked-out branch's review.
+    await writeFile(join(repo, ".git/info/exclude"), "reviews/\n");
     await git("config", "user.name", "Reviewer"); await git("config", "user.email", "reviewer@example.com");
     await writeFile(join(repo, "a.txt"), "base\n"); await git("add", "."); await git("commit", "-m", "base");
     await git("checkout", "-b", "feature");
@@ -141,4 +143,72 @@ test("a rewritten branch shows its new head, and a map written for the old diff 
     assert.deepEqual(await mapOutdated(store, fresh), { revision: old.revision });
     assert.equal(await branchHead({ ...fresh, source: { ...fresh.source, branch: "gone" } as typeof fresh.source }), null);
   } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
+test("a checked-out branch is reviewed as its worktree is, without touching its index or refs; other branches stay commit-only", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "branch-worktree-"));
+  const worktree = `${repo}-feature`;
+  const git = async (...args: string[]) => (await exec("git", ["-C", repo, ...args])).stdout.trim();
+  const inWorktree = async (...args: string[]) => (await exec("git", ["-C", worktree, ...args])).stdout.trim();
+  try {
+    await git("init", "-b", "main");
+    await git("config", "user.name", "Reviewer"); await git("config", "user.email", "reviewer@example.com");
+    await writeFile(join(repo, ".gitignore"), "*.log\n");
+    await writeFile(join(repo, "a.txt"), "base\n"); await writeFile(join(repo, "b.txt"), "base\n");
+    await git("add", "."); await git("commit", "-m", "base");
+    await git("branch", "parked");
+    await git("worktree", "add", "-b", "feature", worktree);
+    await writeFile(join(worktree, "a.txt"), "committed\n"); await inWorktree("commit", "-am", "commit");
+    const head = await inWorktree("rev-parse", "HEAD");
+    const store = new ReviewStore(join(repo, "reviews"));
+    const clean = await loadBranchReview("feature", store, repo);
+    assert.equal(clean.revision, head);
+    assert.equal(clean.source.kind === "local" && clean.source.uncommitted, undefined);
+
+    await writeFile(join(worktree, "a.txt"), "staged\n"); await inWorktree("add", "a.txt");
+    await writeFile(join(worktree, "b.txt"), "unstaged\n");
+    await writeFile(join(worktree, "new.txt"), "untracked\n");
+    await writeFile(join(worktree, "debug.log"), "ignored\n");
+    const status = await inWorktree("status", "--porcelain");
+    const index = await readFile(join(repo, ".git/worktrees", basename(worktree), "index"));
+    const refs = await git("for-each-ref");
+    const dirty = await store.save(await loadBranchReview("feature", store, repo));
+    assert.deepEqual(dirty.source.kind === "local" && dirty.source.uncommitted, { head, files: 3 });
+    assert.match(dirty.patch, /\+staged/); assert.match(dirty.patch, /\+unstaged/); assert.match(dirty.patch, /\+untracked/);
+    assert.doesNotMatch(dirty.patch, /ignored/);
+    assert.equal(await git("rev-parse", `${dirty.revision}^`), head);
+    // Nothing of the worktree's own state moved.
+    assert.deepEqual(await readFile(join(repo, ".git/worktrees", basename(worktree), "index")), index);
+    assert.equal(await git("for-each-ref"), refs);
+    assert.equal(await inWorktree("status", "--porcelain"), status);
+    // The same state is the same snapshot, so nothing reads as moved until a file changes.
+    assert.equal((await loadBranchReview("feature", store, repo)).id, dirty.id);
+    assert.equal(await branchHead(dirty), dirty.revision);
+    // The uncommitted files are the review's last commit, reviewable on their own.
+    const commits = await ownCommits(dirty);
+    assert.deepEqual(commits.map((commit) => commit.sha), [head, dirty.revision]);
+    const uncommitted = await loadCommit(dirty, dirty.revision, store);
+    assert.match(uncommitted.patch, /-committed\n\+staged/);
+    assert.doesNotMatch(uncommitted.patch, /\+committed/);
+
+    const directory = store.prDirectory(dirty);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "map-diff.patch"), dirty.patch);
+    await writeFile(join(directory, "map-request.json"), JSON.stringify({ threadId: "t", title: "T", requestedAt: new Date().toISOString(), revision: dirty.revision }));
+    await writeFile(join(worktree, "new.txt"), "edited\n");
+    assert.notEqual(await branchHead(dirty), dirty.revision);
+    const edited = await loadBranchReview("feature", store, repo);
+    assert.notEqual(edited.id, dirty.id);
+    assert.deepEqual(await mapOutdated(store, edited), { revision: dirty.revision });
+
+    // A branch checked out nowhere shows its commits only.
+    const parked = await loadBranchReview("parked", store, repo);
+    assert.equal(parked.revision, await git("rev-parse", "parked"));
+    await writeFile(join(worktree, "c.txt"), "<<<<<<<\n");
+    await inWorktree("add", "c.txt"); await inWorktree("commit", "-m", "c");
+    await inWorktree("checkout", "-b", "side", "HEAD^"); await writeFile(join(worktree, "c.txt"), "other\n");
+    await inWorktree("add", "c.txt"); await inWorktree("commit", "-m", "other c");
+    await exec("git", ["-C", worktree, "merge", "feature"]).catch(() => undefined);
+    await assert.rejects(loadBranchReview("side", store, repo), /merge conflicts/);
+  } finally { await rm(repo, { recursive: true, force: true }); await rm(worktree, { recursive: true, force: true }); }
 });

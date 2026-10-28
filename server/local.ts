@@ -10,6 +10,7 @@ import { parsePullUrl } from "./github";
 import { ReviewStore } from "./store";
 import { writeContext } from "./context";
 import { localRepo } from "./repository";
+import { branchWorktree } from "./branches";
 
 const execute = promisify(execFile);
 async function git(repo: string, args: string[], diffExit = false) {
@@ -92,14 +93,7 @@ export async function loadLocalReview(
     if (!head || !base) throw error;
   }
   const mergeBase = (await git(repo, ["merge-base", base, head])).trim();
-  const worktrees = (
-    await git(repo, ["worktree", "list", "--porcelain", "-z"])
-  ).split("\0\0");
-  const worktree = localHead ? worktrees
-    .map((block) => block.split("\0"))
-    .find((fields) => fields.includes(`branch refs/heads/${pull.headRefName}`))
-    ?.find((field) => field.startsWith("worktree "))
-    ?.slice(9) : undefined;
+  const worktree = localHead ? await branchWorktree(repo, pull.headRefName) : undefined;
   if (worktree && (await git(worktree, ["ls-files", "--unmerged"])).trim())
     throw new Error(
       "Resolve merge conflicts in this worktree before reviewing.",

@@ -159,7 +159,7 @@ export function createRouter(store: ReviewStore) {
       await sendToThread(input.threadId, changes ? changesMapMessage(review, directory, threadTurns(await readThread(changes.threadId), changes.from - 1).filter((turn) => turn.ordinal <= changes.to)) : [
         `Run the review-map skill (~/.agents/skills/review-map/SKILL.md) for the review "${review.title}" in pr-review.`,
         "",
-        `The diff to map is ${join(directory, "map-diff.patch")} (base ${review.baseRevision}, head ${review.revision}). Name hunks by the starts in its @@ headers.`,
+        `The diff to map is ${join(directory, "map-diff.patch")} (${diffRange(review)}). Name hunks by the starts in its @@ headers.`,
         "Add a note (`notes`: file, side, start, end, why) on each non-obvious line or small range: the reason it was written this way (the motivation, the alternative rejected, the constraint), not a restatement of the diff. Skip trivial lines; do not annotate every line. pr-review shows each note under its lines and lists notes on lines the diff does not show.",
         `Write the map to ${join(directory, "map.json")}. pr-review shows it as soon as the file is valid; an invalid file shows its errors there.`,
       ].join("\n"));
@@ -392,6 +392,13 @@ export function changesMapMessage(review: Review, directory: string, turns: Turn
   ].join("\n");
 }
 
+/** What a review's diff compares, naming the uncommitted files it includes so the agent maps exactly that. */
+function diffRange(review: Review) {
+  const uncommitted = review.source.kind === "local" ? review.source.uncommitted : undefined;
+  return uncommitted
+    ? `base ${review.baseRevision}, head commit ${uncommitted.head} plus the ${uncommitted.files} uncommitted file${uncommitted.files === 1 ? "" : "s"} (staged, unstaged and untracked) in its worktree, snapshotted as ${review.revision}; this is more than the commits`
+    : `base ${review.baseRevision}, head ${review.revision}`;
+}
 /** The first question in `comment`, with the lines and the diff around them. */
 export function askMessage(review: Review, comment: Comment, hunks: string) {
   const lines = hunks.split("\n");

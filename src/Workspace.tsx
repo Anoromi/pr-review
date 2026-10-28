@@ -1424,6 +1424,8 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   useEffect(() => { commitsRequested.current = false; if (commits) loadCommits(); }, [reviewMap]);
   const commitRows: CommitRow[] | null = commits && commits.map((commit) => ({
     ...commit,
+    // The worktree snapshot of a branch with uncommitted files is its last commit.
+    subject: review.source.kind === "local" && review.source.uncommitted && commit.sha === review.revision ? t("uncommittedCommit") : commit.subject,
     read: commit.hunks.length > 0 && commit.hunks.every((hunk) => read.has(hunk.id)),
     chapters: [...new Set(commit.hunks.flatMap((hunk) => hunk.chapter === null ? [] : [hunk.chapter]))].sort((a, b) => a - b),
     uncovered: commit.hunks.filter((hunk) => hunk.chapter === null).length,
@@ -1705,6 +1707,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   const pullNumber = /\/pull\/(\d+)/.exec(review.source.url)?.[1];
   const branch = review.source.kind === "local" ? review.source.branch : review.title;
   const base = review.source.kind === "local" ? review.source.baseBranch : "";
+  const uncommitted = review.source.kind === "local" ? review.source.uncommitted : undefined;
   const shownCommit = scope.kind === "commit" ? commitRows?.[commitIndex] : undefined;
   const focusedRail = focus === "guide";
 
@@ -1716,7 +1719,7 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
           <span className="text-muted-foreground">/</span>
           <b className="truncate font-semibold" title={review.title}>{branch}</b>
           <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-            {base && `→ ${base}`}{pullNumber && ` · PR #${pullNumber}`} · {review.revision.slice(0, 7)}
+            {base && `→ ${base}`}{pullNumber && ` · PR #${pullNumber}`} · {uncommitted ? t("headUncommitted", { hash: uncommitted.head.slice(0, 7), count: uncommitted.files }) : review.revision.slice(0, 7)}
             {stack && <button className="flex items-center gap-1" onClick={onStack}> · {t("stackPosition", { position: stack.position, total: stack.total })}<Keys value="p" /></button>}
           </span>
         </div>

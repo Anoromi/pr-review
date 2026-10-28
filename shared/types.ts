@@ -10,6 +10,8 @@ export type Source =
       branchReview?: boolean;
       branchComparison?: boolean;
       commit?: string;
+      /** A branch review of a worktree with uncommitted files: `commit` is a snapshot of them on top of `head` (see worktreeState in server/branches.ts). */
+      uncommitted?: { head: string; files: number };
       /** A T3 Code thread's own changes in turns `from` to `to` (see server/changes.ts). */
       changes?: { threadId: string; from: number; to: number };
     };
