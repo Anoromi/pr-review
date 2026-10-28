@@ -62,8 +62,7 @@ export class ReviewStore {
    * map-diff.patch, map-request.json, as for a branch).
    */
   threadDirectory(threadId: string) {
-    if (!/^[\w-]{1,200}$/.test(threadId)) throw new Error("Invalid thread ID.");
-    return join(this.root, "threads", threadId);
+    return join(this.root, "threads", createHash("sha256").update(threadId).digest("hex").slice(0, 24));
   }
 
   /** The last turn of the thread the user marked reviewed; 0 before the first. */
