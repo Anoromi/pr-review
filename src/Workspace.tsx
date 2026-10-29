@@ -18,7 +18,7 @@ import {
   paintCursor,
   lineSide as cursorSide,
 } from "./diffCursor";
-import { reviewFiles } from "./reviewFiles";
+import { chapterFiles, reviewFiles } from "./reviewFiles";
 import { Check, ChevronDown, ChevronRight, Circle, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,8 +39,8 @@ import { api } from "./api";
 import { setCommitParam } from "./api";
 import { FiltersDialog } from "./FiltersDialog";
 import { filteredFiles, type FileFilter } from "../shared/filters";
-import { fileStats, parseFiles, selectedCode } from "../shared/diff";
-import { chapterPatch, hunkKey, resolveMap, type Note, type ReviewMap } from "../shared/map";
+import { fileStats, selectedCode } from "../shared/diff";
+import { hunkKey, resolveMap, type Note, type ReviewMap } from "../shared/map";
 import { checkId, hunkIds } from "../shared/read";
 import { Brief, MapList, skippable, type ChapterProgress } from "./ReviewMap";
 import { awaitingReply, threadState, type ThreadState } from "../shared/progress";
@@ -286,12 +286,9 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     if (wholeFile) return shownFiles.filter((file) => file.name === wholeFile.file && !wholeFile.contents);
     if (commitLoading || (inChanges && !scopedChanges)) return [];
     if (shownChapter === null || !mapReview) return shownFiles;
-    const keys = chapters[shownChapter].hunks;
-    const cut = parseFiles(chapterPatch(mapReview.patch, mapFiles, new Set(keys)));
-    cut.forEach((file, index) => {
-      file.cacheKey = `${mapReview.id}:chapter${shownChapter}:${index}`;
+    const cut = chapterFiles(mapReview, mapFiles, chapters[shownChapter].hunks);
+    for (const file of cut)
       if (file.hunks.length < (mapFiles.find((full) => full.name === file.name)?.hunks.length ?? 0)) partialFiles.current.add(file.name);
-    });
     return cut;
   }, [shownFiles, mapFiles, chapters, shownChapter, commitLoading, inChanges, scopedChanges?.id, wholeFile?.file, wholeFile?.contents]);
   // The repository's file filters: matching files stay in the review but
