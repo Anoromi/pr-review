@@ -154,6 +154,8 @@
     "reviewError": "The diff could not be rendered. Try reopening the PR.",
     "hideNavigation": "Hide sidebar",
     "showNavigation": "Show sidebar",
+    "hideAgentPanel": "Hide agent panel",
+    "showAgentPanel": "Show agent panel",
     "openFromUrl": "Open from URL…",
     "pasteUrl": "Paste PR URL",
     "enterToOpen": "Press Enter to open",

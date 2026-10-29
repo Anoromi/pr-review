@@ -19,7 +19,7 @@ import {
   lineSide as cursorSide,
 } from "./diffCursor";
 import { reviewFiles } from "./reviewFiles";
-import { Check, ChevronDown, ChevronRight, Circle } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Circle, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -243,7 +243,16 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   const chapterIds = (index: number) => chapters[index].hunks.map((key) => mapIds.get(key)!);
   const chapterRead = (index: number) => chapterIds(index).every((id) => read.has(id));
   const fileIds = (name: string) => [...shownIds].filter(([key]) => key.slice(0, key.lastIndexOf("#")) === name).map(([, id]) => id);
-  const readFiles = useMemo(() => new Set(shownFiles.filter((file) => fileIds(file.name).every((id) => read.has(id))).map((file) => file.name)), [shownFiles, shownIds, read]);
+  // Files with an unread hunk, in one pass over the hunks: a big branch has about a thousand files and hunks.
+  const unreadFiles = (ids: Map<string, string>) => new Set([...ids].filter(([, id]) => !read.has(id)).map(([key]) => key.slice(0, key.lastIndexOf("#"))));
+  const readFiles = useMemo(() => {
+    const unread = unreadFiles(shownIds);
+    return new Set(shownFiles.map((file) => file.name).filter((name) => !unread.has(name)));
+  }, [shownFiles, shownIds, read]);
+  const branchFilesRead = useMemo(() => {
+    const unread = unreadFiles(branchIds);
+    return branchFiles.filter((file) => !unread.has(file.name)).length;
+  }, [branchFiles, branchIds, read]);
   // A review that already has a map opens on its first unread chapter.
   const opened = useRef(false);
   useEffect(() => {
@@ -1531,7 +1540,6 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
     if (state === "working") chapterProgress[chapter].working++;
   }
   const chaptersRead = chapters.filter((_, index) => chapterRead(index)).length;
-  const branchFilesRead = branchFiles.filter((file) => [...branchIds].filter(([key]) => key.slice(0, key.lastIndexOf("#")) === file.name).every(([, id]) => read.has(id))).length;
   const openQuestions = review.comments.filter((comment) => comment.thread && !comment.resolved).length;
 
   const commands: Command[] = [
@@ -1714,6 +1722,9 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
   return (
     <>
       <header className="topbar gap-3.5 px-2.5">
+        <Button variant="ghost" size="xs" className="-mr-2 text-muted-foreground" aria-pressed={rail} title={t(rail ? "hideNavigation" : "showNavigation")} onClick={() => setRailOpen(!rail)}>
+          {rail ? <PanelLeftClose /> : <PanelLeftOpen />}<Keys value={"\\"} />
+        </Button>
         <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden">
           <span className="flex shrink-0 items-center gap-1 text-muted-foreground">{t("home")}<Keys value="g h" /></span>
           <span className="text-muted-foreground">/</span>
@@ -1749,6 +1760,9 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
         <AgentPill status={status} fallback={t(thread ? "agent.idle" : "agent.noThread")} hint={status.parts[0]?.key === "newReplies" ? "i" : status.parts[0]?.key === "mapReady" || status.parts[0]?.key === "writingMap" ? "M" : "I"}
           onClick={() => { setPanelOpen(true); requestAnimationFrame(() => setFocus("panel")); }} />
         {buttons}
+        <Button variant="ghost" size="xs" className="-ml-2 text-muted-foreground" aria-pressed={panel} title={t(panel ? "hideAgentPanel" : "showAgentPanel")} onClick={() => setPanelOpen(!panel)}>
+          <Keys value="|" />{panel ? <PanelRightClose /> : <PanelRightOpen />}
+        </Button>
       </header>
       <div className="flex min-h-0 flex-1" aria-busy={saving}>
         {rail && (
