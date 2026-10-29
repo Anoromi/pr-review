@@ -19,9 +19,13 @@ test("threads match by worktree or project root and sort by last activity", () =
       thread("deleted", { worktreePath: "/wt", deletedAt: "2026-01-05T00:00:00Z" }),
       thread("elsewhere", { projectId: "q" }),
       thread("idle", { worktreePath: "/wt", updatedAt: "2026-01-01T12:00:00Z" }),
+      // A provider-run subagent cannot take messages; a delegate_task child can.
+      thread("subagent", { worktreePath: "/wt", latestRunCompletedAt: "2026-01-08T00:00:00Z", lineage: { relationshipToParent: "subagent" }, creationSource: "provider" }),
+      thread("delegated", { worktreePath: "/wt", latestRunCompletedAt: "2026-01-07T00:00:00Z", lineage: { relationshipToParent: "subagent" }, creationSource: "mcp" }),
     ],
   };
   assert.deepEqual(matchThreads(shell, ["/wt"]).map((thread) => [thread.id, thread.updatedAt]), [
+    ["delegated", "2026-01-07T00:00:00Z"],
     ["worktree", "2026-01-03T00:00:00Z"],
     ["idle", "2026-01-01T12:00:00Z"],
   ]);

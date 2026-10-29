@@ -23,9 +23,18 @@ export type ShellThread = {
   activeRunId?: string | null;
   /** `run:thread:<id>:ordinal:<n>`. */
   latestRunId?: string | null;
+  lineage?: { relationshipToParent: "fork" | "subagent" | null };
+  creationSource?: string;
 };
 export type Shell = { threads: ShellThread[]; projects: Array<{ id: string; workspaceRoot: string }> };
 export type AgentThread = { id: string; title: string; updatedAt: string; latestTurn: number };
+
+/**
+ * A subagent its provider runs (e.g. Claude's Agent tool): it shares the
+ * parent's checkout but cannot take messages. T3's delegate_task children can.
+ */
+export const providerSubagent = (thread: ShellThread) =>
+  thread.lineage?.relationshipToParent === "subagent" && thread.creationSource === "provider";
 
 /** The thread's latest turn (its runs' ordinal), 0 before the first: for counting turns since one. */
 export const latestTurn = (thread: ShellThread) => Number(/:ordinal:(\d+)$/.exec(thread.latestRunId ?? "")?.[1] ?? 0);
@@ -39,7 +48,7 @@ export function matchThreads(shell: Shell, directories: string[]): AgentThread[]
   const wanted = new Set(directories.map(trim));
   const roots = new Map(shell.projects.map((project) => [project.id, project.workspaceRoot]));
   return shell.threads
-    .filter((thread) => !thread.archivedAt && !thread.deletedAt)
+    .filter((thread) => !thread.archivedAt && !thread.deletedAt && !providerSubagent(thread))
     .filter((thread) => {
       const directory = thread.worktreePath ?? roots.get(thread.projectId);
       return directory !== undefined && wanted.has(trim(directory));

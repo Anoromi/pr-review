@@ -7,7 +7,7 @@ import { resolveMap, reviewMapSchema, type ReviewMap } from "../shared/map";
 import { hunkIds } from "../shared/read";
 import { awaitingReply } from "../shared/progress";
 import { currentBranch } from "./repository";
-import { latestTurn, runState, type Shell, type ShellThread } from "./t3";
+import { latestTurn, providerSubagent, runState, type Shell, type ShellThread } from "./t3";
 import type { ReviewStore } from "./store";
 import { z } from "zod";
 
@@ -139,7 +139,7 @@ export function agentCheckouts(shell: Shell, repo: string, limit = 12) {
   const seen = new Set<string>();
   const rows: Array<{ checkout: string; branch: string; threadId: string; title: string; working: boolean; latestTurn: number; updatedAt: string }> = [];
   const threads = shell.threads
-    .filter((thread) => !thread.archivedAt && !thread.deletedAt && projects.has(thread.projectId))
+    .filter((thread) => !thread.archivedAt && !thread.deletedAt && !providerSubagent(thread) && projects.has(thread.projectId))
     .map((thread) => ({ thread, at: [thread.latestUserMessageAt, thread.latestRunStartedAt, thread.latestRunCompletedAt, thread.updatedAt].filter(Boolean).sort().at(-1)! }))
     .sort((a, b) => b.at.localeCompare(a.at));
   for (const { thread, at } of threads) {
