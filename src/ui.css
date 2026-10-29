@@ -107,14 +107,17 @@
     height: 100dvh;
     min-height: 320px;
     font-size: 13px;
+    /* Nothing inside may widen the page: wide content scrolls in its own pane. */
+    overflow: clip;
   }
   .topbar {
     display: flex;
     flex-shrink: 0;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
-    height: 36px;
-    padding: 0 8px 0 4px;
+    min-height: 36px;
+    padding: 4px 8px 4px 4px;
     border-bottom: 1px solid var(--border);
     background: var(--panel);
   }

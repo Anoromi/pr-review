@@ -1721,11 +1721,11 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
 
   return (
     <>
-      <header className="topbar gap-3.5 px-2.5">
+      <header className="topbar gap-x-3.5 gap-y-1 px-2.5">
         <Button variant="ghost" size="xs" className="-mr-2 text-muted-foreground" aria-pressed={rail} title={t(rail ? "hideNavigation" : "showNavigation")} onClick={() => setRailOpen(!rail)}>
           {rail ? <PanelLeftClose /> : <PanelLeftOpen />}<Keys value={"\\"} />
         </Button>
-        <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden">
+        <div className="flex min-w-0 shrink items-center gap-2 max-w-[36rem] overflow-hidden">
           <span className="flex shrink-0 items-center gap-1 text-muted-foreground">{t("home")}<Keys value="g h" /></span>
           <span className="text-muted-foreground">/</span>
           <b className="truncate font-semibold" title={review.title}>{branch}</b>
@@ -1750,19 +1750,20 @@ export function Workspace({ review, change, saving, theme, path, initialCommit, 
           <span className="bar"><i style={{ width: `${(chapters.length ? chaptersRead / chapters.length : branchFilesRead / Math.max(1, branchFiles.length)) * 100}%` }} /></span>
           <span className="truncate">{chapters.length ? t("chaptersRead", { read: chaptersRead, total: chapters.length }) : t("filesRead", { read: branchFilesRead, total: branchFiles.length })} · {t("openQuestions", { count: openQuestions })}</span>
         </div>
-        <span className="ml-auto" />
-        {progress?.head && progress.head !== review.revision && (
-          <button className="pill" data-tone="warn" role="status" onClick={onReload}><Dot tone="warn" />{t("branchMoved", { hash: progress.head.slice(0, 7) })}<Keys value="g r" /></button>
-        )}
-        {reviewMap && mapOutdated && (
-          <button className="pill" data-tone="warn" title={t("mapCard.outdatedWhy")} onClick={() => openRail("map")}><Dot tone="warn" />{mapOutdated.revision ? t("mapCard.outdatedFor", { hash: mapOutdated.revision.slice(0, 7) }) : t("mapCard.outdated")}<Keys value="g M" /></button>
-        )}
-        <AgentPill status={status} fallback={t(thread ? "agent.idle" : "agent.noThread")} hint={status.parts[0]?.key === "newReplies" ? "i" : status.parts[0]?.key === "mapReady" || status.parts[0]?.key === "writingMap" ? "M" : "I"}
-          onClick={() => { setPanelOpen(true); requestAnimationFrame(() => setFocus("panel")); }} />
-        {buttons}
-        <Button variant="ghost" size="xs" className="-ml-2 text-muted-foreground" aria-pressed={panel} title={t(panel ? "hideAgentPanel" : "showAgentPanel")} onClick={() => setPanelOpen(!panel)}>
-          <Keys value="|" />{panel ? <PanelRightClose /> : <PanelRightOpen />}
-        </Button>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3.5 gap-y-1">
+          {progress?.head && progress.head !== review.revision && (
+            <button className="pill" data-tone="warn" role="status" onClick={onReload}><Dot tone="warn" />{t("branchMoved", { hash: progress.head.slice(0, 7) })}<Keys value="g r" /></button>
+          )}
+          {reviewMap && mapOutdated && (
+            <button className="pill" data-tone="warn" title={t("mapCard.outdatedWhy")} onClick={() => openRail("map")}><Dot tone="warn" />{mapOutdated.revision ? t("mapCard.outdatedFor", { hash: mapOutdated.revision.slice(0, 7) }) : t("mapCard.outdated")}<Keys value="g M" /></button>
+          )}
+          <AgentPill status={status} fallback={t(thread ? "agent.idle" : "agent.noThread")} hint={status.parts[0]?.key === "newReplies" ? "i" : status.parts[0]?.key === "mapReady" || status.parts[0]?.key === "writingMap" ? "M" : "I"}
+            onClick={() => { setPanelOpen(true); requestAnimationFrame(() => setFocus("panel")); }} />
+          {buttons}
+          <Button variant="ghost" size="xs" className="-ml-2 text-muted-foreground" aria-pressed={panel} title={t(panel ? "hideAgentPanel" : "showAgentPanel")} onClick={() => setPanelOpen(!panel)}>
+            <Keys value="|" />{panel ? <PanelRightClose /> : <PanelRightOpen />}
+          </Button>
+        </div>
       </header>
       <div className="flex min-h-0 flex-1" aria-busy={saving}>
         {rail && (
