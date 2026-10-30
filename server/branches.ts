@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join, resolve } from "node:path";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import type { Review } from "../shared/types";
@@ -86,13 +86,39 @@ export async function branchWorktree(repo: string, branch: string) {
 }
 
 /**
+ * What git status sees in `worktree` (HEAD, index entries, changed and
+ * untracked paths) plus the size and times of each listed path, so an edit
+ * to an already modified file changes it too. Reading it touches nothing.
+ */
+async function worktreeFingerprint(worktree: string) {
+  const status = await git(worktree, "--no-optional-locks", "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--no-renames");
+  const stats = await Promise.all(status.split("\0").filter((record) => /^[1u?] /.test(record)).map(async (record) => {
+    const path = record[0] === "?" ? record.slice(2) : record.split(" ").slice(record[0] === "1" ? 8 : 10).join(" ");
+    const stat = await lstat(join(worktree, path)).catch((error) => { if (error.code === "ENOENT") return undefined; throw error; });
+    return stat && [stat.size, stat.mtimeMs, stat.ctimeMs, stat.mode];
+  }));
+  return JSON.stringify([status, stats]);
+}
+
+const worktreeStates = new Map<string, { fingerprint: string; state: Awaited<ReturnType<typeof snapshotWorktree>> }>();
+/** The worktree as a commit (see snapshotWorktree), taken again only when its fingerprint changed. */
+export async function worktreeState(worktree: string) {
+  const fingerprint = await worktreeFingerprint(worktree);
+  const known = worktreeStates.get(worktree);
+  if (known?.fingerprint === fingerprint) return known.state;
+  const state = await snapshotWorktree(worktree);
+  worktreeStates.set(worktree, { fingerprint, state });
+  return state;
+}
+
+/**
  * What is in `worktree` now, as a commit: HEAD plus every staged, unstaged
  * and untracked (not ignored) file, with HEAD as its parent. It is written
  * through a copy of the index, so the worktree's own index and refs are never
  * touched, and with HEAD's dates, so the same state always gets the same id.
  * `files` counts the files it changes against HEAD; with none, `commit` is HEAD.
  */
-export async function worktreeState(worktree: string) {
+async function snapshotWorktree(worktree: string) {
   if ((await git(worktree, "ls-files", "--unmerged")).trim()) throw new Error(`Resolve merge conflicts in ${worktree} before reviewing.`);
   const [head, headTree, date] = (await git(worktree, "log", "-1", "--format=%H%n%T%n%cI", "HEAD")).trim().split("\n");
   const index = (await git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index")).trim();
@@ -183,13 +209,35 @@ async function loadBranchSnapshot(repo: string, branch: string, commit: string, 
 export async function loadSnapshot(repo: string, id: string, title: string, source: Review["source"], commit: string, base: string, store: ReviewStore, patch?: string): Promise<Review> {
   patch ??= await git(repo, ...diffArgs, base, commit, "--");
   const review: Review = { id, title, source, revision: commit, baseRevision: base, patch, comments: [], updatedAt: new Date().toISOString() };
-  for (const file of parseFiles(patch)) {
-    if (!file.hunks.length || !["change", "rename-changed", "rename-pure"].includes(file.type)) continue;
-    const oldName = file.prevName ?? file.name;
+  const files = parseFiles(patch).filter((file) => file.hunks.length && ["change", "rename-changed", "rename-pure"].includes(file.type));
+  const contents = await readObjects(repo, files.flatMap((file) => [`${base}:${file.prevName ?? file.name}`, `${commit}:${file.name}`]));
+  for (const [i, file] of files.entries()) {
     await writeContext(store.path(id), file.name, {
-      oldFile: file.type === "rename-pure" ? null : { name: oldName, contents: await git(repo, "show", `${base}:${oldName}`) },
-      newFile: { name: file.name, contents: await git(repo, "show", `${commit}:${file.name}`) },
+      oldFile: file.type === "rename-pure" ? null : { name: file.prevName ?? file.name, contents: contents[2 * i] },
+      newFile: { name: file.name, contents: contents[2 * i + 1] },
     });
   }
   return withGeneratedFiles(review);
+}
+
+/** The contents of each `revision:path` in `objects`, read through one `git cat-file --batch`. */
+export async function readObjects(repo: string, objects: string[]) {
+  if (!objects.length) return [];
+  const run = execute("git", ["-C", repo, "cat-file", "--batch", "-z"], { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024, timeout: 30000 });
+  run.child.stdin!.end(objects.map((object) => `${object}\0`).join(""));
+  return parseObjects((await run).stdout, objects);
+}
+
+/** Splits `git cat-file --batch` output by the size in each header; a missing object fails. */
+export function parseObjects(output: Buffer, objects: string[]) {
+  let offset = 0;
+  return objects.map((object) => {
+    const end = output.indexOf(10, offset);
+    const header = output.toString("utf8", offset, end < 0 ? output.length : end);
+    const size = /^[0-9a-f]+ blob (\d+)$/.exec(header)?.[1];
+    if (end < 0 || !size) throw new Error(`Git could not read ${object}: ${header || "no output"}`);
+    offset = end + 1 + Number(size) + 1;
+    if (offset > output.length) throw new Error(`Git output for ${object} is cut short.`);
+    return output.toString("utf8", end + 1, end + 1 + Number(size));
+  });
 }

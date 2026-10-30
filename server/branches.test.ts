@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { branchHead, listBranches, loadBranchCommit, loadBranchReview, loadCommit, ownCommits } from "./branches";
+import { branchHead, listBranches, loadBranchCommit, loadBranchReview, loadCommit, ownCommits, parseObjects, worktreeState } from "./branches";
 import { mapOutdated } from "./home";
 import { ReviewStore } from "./store";
 const exec = promisify(execFile);
@@ -211,4 +211,33 @@ test("a checked-out branch is reviewed as its worktree is, without touching its 
     await exec("git", ["-C", worktree, "merge", "feature"]).catch(() => undefined);
     await assert.rejects(loadBranchReview("side", store, repo), /merge conflicts/);
   } finally { await rm(repo, { recursive: true, force: true }); await rm(worktree, { recursive: true, force: true }); }
+});
+
+test("batch output splits by the byte sizes in its headers and fails on a missing object", () => {
+  const blob = (contents: Buffer) => Buffer.concat([Buffer.from(`${"a".repeat(40)} blob ${contents.length}\n`), contents, Buffer.from("\n")]);
+  const output = Buffer.concat([blob(Buffer.from("héllo\nwörld\n")), blob(Buffer.from("")), blob(Buffer.from("x\n0 blob 9\n"))]);
+  assert.deepEqual(parseObjects(output, ["a:1", "a:2", "a:3"]), ["héllo\nwörld\n", "", "x\n0 blob 9\n"]);
+  assert.throws(() => parseObjects(Buffer.from("a:gone missing\n"), ["a:gone"]), /could not read a:gone: a:gone missing/);
+  assert.throws(() => parseObjects(output.subarray(0, 30), ["a:1"]), /could not read a:1/);
+  assert.throws(() => parseObjects(output.subarray(0, 55), ["a:1"]), /cut short/);
+});
+
+test("a worktree's state is reused until a listed file, the index or HEAD changes", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "worktree-state-"));
+  const git = async (...args: string[]) => (await exec("git", ["-C", repo, ...args])).stdout.trim();
+  try {
+    await git("init", "-b", "main");
+    await git("config", "user.name", "Reviewer"); await git("config", "user.email", "reviewer@example.com");
+    await writeFile(join(repo, "a.txt"), "base\n"); await git("add", "."); await git("commit", "-m", "base");
+    await writeFile(join(repo, "a.txt"), "one\n");
+    const first = await worktreeState(repo);
+    assert.equal(await worktreeState(repo), first);
+    // Same size, already modified: git status reads the same, the file does not.
+    await writeFile(join(repo, "a.txt"), "two\n");
+    const edited = await worktreeState(repo);
+    assert.notEqual(edited.commit, first.commit);
+    assert.equal(await worktreeState(repo), edited);
+    await git("add", "a.txt"); await git("commit", "-m", "two");
+    assert.deepEqual(await worktreeState(repo), { commit: await git("rev-parse", "HEAD"), head: await git("rev-parse", "HEAD"), files: 0 });
+  } finally { await rm(repo, { recursive: true, force: true }); }
 });

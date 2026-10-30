@@ -10,7 +10,7 @@ import { parsePullUrl } from "./github";
 import { ReviewStore } from "./store";
 import { writeContext } from "./context";
 import { localRepo } from "./repository";
-import { branchWorktree } from "./branches";
+import { branchWorktree, readObjects } from "./branches";
 
 const execute = promisify(execFile);
 async function git(repo: string, args: string[], diffExit = false) {
@@ -168,14 +168,22 @@ export async function loadLocalReview(
    
     updatedAt: new Date().toISOString(),
   };
-  for (const file of files) {
-    if (
-      !file.hunks.length ||
-      !["change", "rename-changed", "rename-pure"].includes(file.type)
-    )
-      continue;
+  const contextFiles = files.filter(
+    (file) =>
+      file.hunks.length &&
+      ["change", "rename-changed", "rename-pure"].includes(file.type),
+  );
+  const blobs = await readObjects(
+    repo,
+    contextFiles.flatMap((file) => [
+      `${mergeBase}:${file.prevName ?? file.name}`,
+      ...(worktree ? [] : [`${head}:${file.name}`]),
+    ]),
+  );
+  const perFile = worktree ? 1 : 2;
+  for (const [i, file] of contextFiles.entries()) {
     const oldName = file.prevName ?? file.name;
-    const oldContents = await git(repo, ["show", `${mergeBase}:${oldName}`]);
+    const oldContents = blobs[perFile * i];
     let newContents: string;
     if (worktree) {
       const path = resolve(worktree, file.name);
@@ -184,7 +192,7 @@ export async function loadLocalReview(
       newContents = (await lstat(path)).isSymbolicLink()
         ? await readlink(path)
         : await readFile(path, "utf8");
-    } else newContents = await git(repo, ["show", `${head}:${file.name}`]);
+    } else newContents = blobs[perFile * i + 1];
     for (const [contents, expected] of [
       [oldContents, file.prevObjectId],
       [newContents, file.newObjectId],
