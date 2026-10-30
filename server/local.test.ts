@@ -89,14 +89,18 @@ test("local snapshots include unpushed, staged, unstaged and untracked changes w
       ["example.txt", "new file.txt", "staged.txt"],
     );
     assert.equal(await git("status", "--porcelain"), before);
-    const context = await readContext(store.path(review.id), "example.txt");
+    const example = parseFiles(review.patch).find((file) => file.name === "example.txt")!;
+    const context = await readContext(store.path(review.id), review, example);
     assert.match(context!.newFile.contents, /unstaged/);
+    assert.match(context!.oldFile!.contents, /line 20\n/);
+    // The snapshot's objects are kept from `git gc` by refs, not copied into the store.
+    assert.equal((await git("for-each-ref", "--format=%(refname)", `refs/pr-review/snapshots/${review.id}/`)).trim().split("\n").length, 2);
     await store.save(review);
     assert.equal((await loadLocalReview(pull, store, repo)).id, review.id);
     await writeFile(join(repo, "example.txt"), "later changes\n");
     assert.notEqual((await loadLocalReview(pull, store, repo)).id, review.id);
     assert.match(
-      (await readContext(store.path(review.id), "example.txt"))!.newFile
+      (await readContext(store.path(review.id), review, example))!.newFile
         .contents,
       /unstaged/,
     );

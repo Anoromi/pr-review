@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { FileDiffMetadata, FileDiffLoadedFiles } from "@pierre/diffs";
 import type { Review } from "../shared/types";
 import { gh, parsePullUrl } from "./github";
+import { readObjects } from "./branches";
 
 function cachePath(directory: string, file: string) {
   return join(
@@ -12,16 +13,28 @@ function cachePath(directory: string, file: string) {
   );
 }
 
+/**
+ * The file's old and new contents to expand its hunks with: saved beside the
+ * snapshot (fetched from GitHub, or a local snapshot from before they were
+ * read lazily), otherwise for a local snapshot read from Git by the blob ids
+ * in its patch. Undefined where neither has them.
+ */
 export async function readContext(
   directory: string,
-  file: string,
+  review: Review,
+  file: FileDiffMetadata,
 ): Promise<FileDiffLoadedFiles | undefined> {
   try {
-    return JSON.parse(await readFile(cachePath(directory, file), "utf8"));
+    return JSON.parse(await readFile(cachePath(directory, file.name), "utf8"));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  if (review.source.kind !== "local" || !file.hunks.length || !["change", "rename-changed"].includes(file.type)) return;
+  const [oldContents, newContents] = await readObjects(review.source.repo, [file.prevObjectId!, file.newObjectId!]);
+  return {
+    oldFile: { name: file.prevName ?? file.name, contents: oldContents },
+    newFile: { name: file.name, contents: newContents },
+  };
 }
 
 export async function loadContext(
@@ -30,7 +43,7 @@ export async function loadContext(
   file: FileDiffMetadata,
   run = gh,
 ): Promise<FileDiffLoadedFiles> {
-  const cached = await readContext(directory, file.name);
+  const cached = await readContext(directory, review, file);
   if (cached) return cached;
   if (review.source.kind === "local")
     throw new Error(
@@ -76,7 +89,7 @@ export async function loadContext(
   return result;
 }
 
-export async function writeContext(
+async function writeContext(
   directory: string,
   file: string,
   result: FileDiffLoadedFiles,

@@ -5,9 +5,8 @@ import { copyFile, lstat, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import type { Review } from "../shared/types";
+import { generatedFiles } from "./local";
 import { parseFiles } from "../shared/diff";
-import { writeContext } from "./context";
-import { withGeneratedFiles } from "./local";
 import { ReviewStore } from "./store";
 import { githubRepoOrNull, localRepo } from "./repository";
 
@@ -19,7 +18,8 @@ async function git(repo: string, ...args: string[]) {
 async function branchRef(repo: string, branch: string) {
   const ref = `refs/heads/${branch}`;
   await git(repo, "check-ref-format", ref);
-  await git(repo, "rev-parse", "--verify", `${ref}^{commit}`);
+  // Not peeled to ^{commit}: that reads the object, slow in a repository with many packs.
+  await git(repo, "rev-parse", "--verify", ref);
   return ref;
 }
 export async function listBranches(repo = branchRepo()) {
@@ -70,10 +70,11 @@ export async function ownCommits(review: Review) {
  */
 export async function branchHead(review: Review) {
   if (review.source.kind !== "local") return null;
-  let head: string;
-  try { head = (await git(review.source.repo, "rev-parse", "--verify", "--quiet", `refs/heads/${review.source.branch}^{commit}`)).trim(); }
-  catch { return null; }
-  const worktree = review.source.branchReview && await branchWorktree(review.source.repo, review.source.branch);
+  const [head, worktree] = await Promise.all([
+    git(review.source.repo, "rev-parse", "--verify", "--quiet", `refs/heads/${review.source.branch}`).then((head) => head.trim(), () => null),
+    review.source.branchReview && branchWorktree(review.source.repo, review.source.branch),
+  ]);
+  if (!head) return null;
   return worktree ? (await worktreeState(worktree)).commit : head;
 }
 
@@ -119,24 +120,33 @@ export async function worktreeState(worktree: string) {
  * `files` counts the files it changes against HEAD; with none, `commit` is HEAD.
  */
 async function snapshotWorktree(worktree: string) {
-  if ((await git(worktree, "ls-files", "--unmerged")).trim()) throw new Error(`Resolve merge conflicts in ${worktree} before reviewing.`);
-  const [head, headTree, date] = (await git(worktree, "log", "-1", "--format=%H%n%T%n%cI", "HEAD")).trim().split("\n");
-  const index = (await git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index")).trim();
   const temporary = await mkdtemp(join(tmpdir(), "pr-review-index-"));
   const env = {
     ...process.env, GIT_INDEX_FILE: join(temporary, "index"),
-    GIT_AUTHOR_NAME: "pr-review", GIT_AUTHOR_EMAIL: "pr-review@localhost", GIT_AUTHOR_DATE: date,
-    GIT_COMMITTER_NAME: "pr-review", GIT_COMMITTER_EMAIL: "pr-review@localhost", GIT_COMMITTER_DATE: date,
+    GIT_AUTHOR_NAME: "pr-review", GIT_AUTHOR_EMAIL: "pr-review@localhost",
+    GIT_COMMITTER_NAME: "pr-review", GIT_COMMITTER_EMAIL: "pr-review@localhost",
   };
   const run = async (...args: string[]) => (await execute("git", ["-C", worktree, ...args], { env, maxBuffer: 60 * 1024 * 1024, timeout: 30000 })).stdout.trim();
   try {
-    // Without an index (nothing ever staged), `add -A` builds one from the files.
-    await copyFile(index, env.GIT_INDEX_FILE).catch((error) => { if (error.code !== "ENOENT") throw error; });
-    await run("add", "-A");
-    const tree = await run("write-tree");
+    const [unmerged, [head, headTree, date], tree] = await Promise.all([
+      git(worktree, "ls-files", "--unmerged"),
+      git(worktree, "log", "-1", "--format=%H%n%T%n%cI", "HEAD").then((log) => log.trim().split("\n")),
+      (async () => {
+        // Without an index (nothing ever staged), `add -A` builds one from the files.
+        const index = (await git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index")).trim();
+        await copyFile(index, env.GIT_INDEX_FILE).catch((error) => { if (error.code !== "ENOENT") throw error; });
+        await run("add", "-A");
+        return run("write-tree");
+      })(),
+    ]);
+    if (unmerged.trim()) throw new Error(`Resolve merge conflicts in ${worktree} before reviewing.`);
     if (tree === headTree) return { commit: head, head, files: 0 };
-    const files = (await run("diff-tree", "-r", "-z", "--name-only", "--no-renames", headTree, tree)).split("\0").filter(Boolean).length;
-    return { commit: await run("commit-tree", tree, "-p", head, "-m", "Uncommitted changes"), head, files };
+    Object.assign(env, { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
+    const [files, commit] = await Promise.all([
+      run("diff-tree", "-r", "-z", "--name-only", "--no-renames", headTree, tree).then((names) => names.split("\0").filter(Boolean).length),
+      run("commit-tree", tree, "-p", head, "-m", "Uncommitted changes"),
+    ]);
+    return { commit, head, files };
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
@@ -180,14 +190,14 @@ export async function loadBranchCommit(branch: string, commit: string, store: Re
 
 export async function loadBranchReview(branch: string, store: ReviewStore, repo = branchRepo()): Promise<Review> {
   repo = resolve(repo);
-  const ref = await branchRef(repo, branch);
-  const worktree = await branchWorktree(repo, branch);
-  // A checked-out branch is reviewed as its worktree is: commits plus uncommitted files.
-  const state = worktree ? await worktreeState(worktree) : undefined;
-  const commit = state?.commit ?? (await git(repo, "rev-parse", "--verify", `${ref}^{commit}`)).trim();
-  const main = await mainRef(repo);
+  const [ref, worktree, main] = await Promise.all([branchRef(repo, branch), branchWorktree(repo, branch), mainRef(repo)]);
+  const head = (await git(repo, "rev-parse", "--verify", ref)).trim();
+  // A checked-out branch is reviewed as its worktree is: commits plus uncommitted
+  // files, a commit on top of HEAD with the same merge base with main.
+  const [state, headBase] = await Promise.all([worktree ? worktreeState(worktree) : undefined, git(repo, "merge-base", main, head)]);
+  const commit = state?.commit ?? head;
   const baseBranch = main === "refs/remotes/origin/main" ? "origin/main" : "main";
-  const base = (await git(repo, "merge-base", main, commit)).trim();
+  const base = !state || state.head === head ? headBase.trim() : (await git(repo, "merge-base", main, commit)).trim();
   return loadBranchSnapshot(repo, branch, commit, base, baseBranch, store, state?.files ? { head: state.head, files: state.files } : undefined);
 }
 
@@ -205,22 +215,32 @@ async function loadBranchSnapshot(repo: string, branch: string, commit: string, 
   return loadSnapshot(repo, id, title, source, commit, base, store);
 }
 
-/** A snapshot of `base` (a commit or tree) to `commit`, with the context to expand its hunks; `patch` when already diffed. */
+/**
+ * A snapshot of `base` (a commit or tree) to `commit`: the saved one when
+ * `id` exists, otherwise diffed now (`patch` when already diffed). The
+ * context to expand its hunks is read from Git when asked for (see readContext).
+ */
 export async function loadSnapshot(repo: string, id: string, title: string, source: Review["source"], commit: string, base: string, store: ReviewStore, patch?: string): Promise<Review> {
-  patch ??= await git(repo, ...diffArgs, base, commit, "--");
-  const review: Review = { id, title, source, revision: commit, baseRevision: base, patch, comments: [], updatedAt: new Date().toISOString() };
-  const files = parseFiles(patch).filter((file) => file.hunks.length && ["change", "rename-changed", "rename-pure"].includes(file.type));
-  const contents = await readObjects(repo, files.flatMap((file) => [`${base}:${file.prevName ?? file.name}`, `${commit}:${file.name}`]));
-  for (const [i, file] of files.entries()) {
-    await writeContext(store.path(id), file.name, {
-      oldFile: file.type === "rename-pure" ? null : { name: file.prevName ?? file.name, contents: contents[2 * i] },
-      newFile: { name: file.name, contents: contents[2 * i + 1] },
-    });
-  }
-  return withGeneratedFiles(review);
+  try { return await store.read(id); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  // The changed paths' attributes are read while the full diff runs.
+  const paths = patch ? Promise.resolve(parseFiles(patch).map((file) => file.name)) : git(repo, ...diffArgs, "--name-only", "-z", base, commit, "--").then((names) => names.split("\0").filter(Boolean));
+  const [diff, generated] = await Promise.all([patch ?? git(repo, ...diffArgs, base, commit, "--"), paths.then((paths) => generatedFiles(repo, commit, paths)), keepSnapshot(repo, id, commit, base)]);
+  return { id, title, source, revision: commit, baseRevision: base, patch: diff, generatedFiles: generated, comments: [], updatedAt: new Date().toISOString() };
 }
 
-/** The contents of each `revision:path` in `objects`, read through one `git cat-file --batch`. */
+/**
+ * Refs to both sides of snapshot `id` under refs/pr-review/snapshots/, so
+ * `git gc` keeps the objects its context is read from (an uncommitted
+ * worktree snapshot or a rewritten branch is otherwise unreachable).
+ */
+export async function keepSnapshot(repo: string, id: string, revision: string, base: string) {
+  const run = execute("git", ["-C", repo, "update-ref", "--stdin"], { timeout: 30000 });
+  run.child.stdin!.end(`update refs/pr-review/snapshots/${id}/revision ${revision}\nupdate refs/pr-review/snapshots/${id}/base ${base}\n`);
+  await run;
+}
+
+/** The contents of each object (`revision:path` or an object id) in `objects`, read through one `git cat-file --batch`. */
 export async function readObjects(repo: string, objects: string[]) {
   if (!objects.length) return [];
   const run = execute("git", ["-C", repo, "cat-file", "--batch", "-z"], { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024, timeout: 30000 });

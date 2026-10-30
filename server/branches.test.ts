@@ -7,6 +7,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { branchHead, listBranches, loadBranchCommit, loadBranchReview, loadCommit, ownCommits, parseObjects, worktreeState } from "./branches";
 import { mapOutdated } from "./home";
+import { readContext } from "./context";
+import { parseFiles } from "../shared/diff";
 import { ReviewStore } from "./store";
 const exec = promisify(execFile);
 
@@ -169,18 +171,25 @@ test("a checked-out branch is reviewed as its worktree is, without touching its 
     await writeFile(join(worktree, "b.txt"), "unstaged\n");
     await writeFile(join(worktree, "new.txt"), "untracked\n");
     await writeFile(join(worktree, "debug.log"), "ignored\n");
+    await writeFile(join(worktree, ".gitattributes"), "new.txt linguist-generated\n");
     const status = await inWorktree("status", "--porcelain");
     const index = await readFile(join(repo, ".git/worktrees", basename(worktree), "index"));
-    const refs = await git("for-each-ref");
+    const refs = await git("for-each-ref", "--exclude=refs/pr-review/snapshots/");
     const dirty = await store.save(await loadBranchReview("feature", store, repo));
-    assert.deepEqual(dirty.source.kind === "local" && dirty.source.uncommitted, { head, files: 3 });
+    assert.deepEqual(dirty.source.kind === "local" && dirty.source.uncommitted, { head, files: 4 });
+    // Attributes come from the snapshot, uncommitted .gitattributes included.
+    assert.deepEqual(dirty.generatedFiles, ["new.txt"]);
     assert.match(dirty.patch, /\+staged/); assert.match(dirty.patch, /\+unstaged/); assert.match(dirty.patch, /\+untracked/);
     assert.doesNotMatch(dirty.patch, /ignored/);
     assert.equal(await git("rev-parse", `${dirty.revision}^`), head);
     // Nothing of the worktree's own state moved.
     assert.deepEqual(await readFile(join(repo, ".git/worktrees", basename(worktree), "index")), index);
-    assert.equal(await git("for-each-ref"), refs);
+    assert.equal(await git("for-each-ref", "--exclude=refs/pr-review/snapshots/"), refs);
     assert.equal(await inWorktree("status", "--porcelain"), status);
+    // Context is read from the snapshot's objects, which its refs keep through `git gc`.
+    await git("gc", "--prune=now", "--quiet");
+    const b = parseFiles(dirty.patch).find((file) => file.name === "b.txt")!;
+    assert.deepEqual(await readContext(store.path(dirty.id), dirty, b), { oldFile: { name: "b.txt", contents: "base\n" }, newFile: { name: "b.txt", contents: "unstaged\n" } });
     // The same state is the same snapshot, so nothing reads as moved until a file changes.
     assert.equal((await loadBranchReview("feature", store, repo)).id, dirty.id);
     assert.equal(await branchHead(dirty), dirty.revision);

@@ -62,7 +62,7 @@ export function createRouter(store: ReviewStore) {
   async function selectedLines(review: Review, input: { file: string; side: Comment["side"]; start: number; end: number }) {
     const file = parseFiles(review.patch).find((file) => file.name === input.file);
     if (!file) throw new Error("This file is not part of the review.");
-    const context = await readContext(store.path(review.id), file.name);
+    const context = await readContext(store.path(review.id), review, file);
     if (context) hydratePartialDiff("merge", file, context);
     return { code: selectedCode(file, input.side, input.start, input.end), hunks: hunkText(file, input.side, input.start, input.end) };
   }
